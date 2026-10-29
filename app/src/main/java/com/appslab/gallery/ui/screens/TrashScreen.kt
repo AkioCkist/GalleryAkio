@@ -1,5 +1,11 @@
 package com.appslab.gallery.ui.screens
 
+import com.appslab.gallery.ui.components.GlassScaffold
+import com.appslab.gallery.ui.components.GlassTextButton
+import com.appslab.gallery.ui.components.gridPadding
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
 import android.os.Build
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,9 +19,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,24 +49,14 @@ fun TrashScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
     // Reload whenever the library changes (restores and deletes both trigger it).
     LaunchedEffect(library.all) { viewModel.loadTrash() }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("TRASH", fontFamily = CqMono, fontSize = 20.sp) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = {
-                    if (items.isNotEmpty()) {
-                        TextButton(onClick = { consent(viewModel.deleteRequest(items)) }) {
-                            Text("EMPTY", fontFamily = CqMono, color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+    GlassScaffold(
+        title = "TRASH",
+        onBack = onBack,
+        actions = { backdrop ->
+            if (items.isNotEmpty()) GlassTextButton(backdrop, "EMPTY", onClick = { consent(viewModel.deleteRequest(items)) }, color = Color(0xFFFF5A5A))
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize()) {
             when {
                 Build.VERSION.SDK_INT < 30 -> CenteredMessage("Trash needs Android 11+", "Deleted items are removed immediately.")
                 items.isEmpty() -> CenteredMessage("Trash is empty", "Items you delete stay here for 30 days.")
@@ -75,6 +68,7 @@ fun TrashScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                     selection = selection,
                     onOpen = { selection.toggle(it.id) },
                     modifier = Modifier.fillMaxSize(),
+                    contentPadding = gridPadding(padding.calculateTopPadding()),
                 )
             }
             if (selection.active) {
@@ -85,10 +79,9 @@ fun TrashScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                     onSelectAll = { selection.setAll(items.map { it.id }) },
                     onShare = null,
                     onDelete = { consent(viewModel.deleteRequest(selected)) },
-                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
                     extra = {
                         IconButton(onClick = { consent(viewModel.restoreRequest(selected)) }) {
-                            Icon(painterResource(R.drawable.restore), "Restore")
+                            Icon(painterResource(R.drawable.restore), "Restore", modifier = Modifier.size(20.dp))
                         }
                     },
                 )

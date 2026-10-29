@@ -9,6 +9,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import com.appslab.gallery.ui.components.LocalGlassDark
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -102,13 +104,16 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
             enterTransition = { EnterTransition.None },
             popExitTransition = { ExitTransition.None },
         ) { entry ->
-            PhotoDetailScreen(
-                viewModel = viewModel,
-                initialId = entry.arguments?.getLong("id") ?: 0L,
-                source = MediaSource.decode(entry.arguments?.getString("source") ?: "all"),
-                onBack = navController::popBackStack,
-                transition = transition,
-            )
+            // The viewer is always dark, whatever the app theme: so are its menus and dialogs.
+            CompositionLocalProvider(LocalGlassDark provides true) {
+                PhotoDetailScreen(
+                    viewModel = viewModel,
+                    initialId = entry.arguments?.getLong("id") ?: 0L,
+                    source = MediaSource.decode(entry.arguments?.getString("source") ?: "all"),
+                    onBack = navController::popBackStack,
+                    transition = transition,
+                )
+            }
         }
     }
 }

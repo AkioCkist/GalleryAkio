@@ -45,6 +45,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.CompositionLocalProvider
 import com.appslab.gallery.ui.GalleryNavHost
+import com.appslab.gallery.ui.components.GlassOverlayHost
 import com.appslab.gallery.ui.components.GridLayout
 import com.appslab.gallery.ui.components.LocalGridLayout
 import com.appslab.gallery.ui.GalleryViewModel
@@ -81,8 +82,10 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 CompositionLocalProvider(LocalGridLayout provides gridLayout) {
-                    PermissionGate(onGranted = viewModel::start) {
-                        GalleryNavHost(viewModel)
+                    GlassOverlayHost {
+                        PermissionGate(onGranted = viewModel::start) {
+                            GalleryNavHost(viewModel)
+                        }
                     }
                 }
             }

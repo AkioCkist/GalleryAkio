@@ -1,5 +1,7 @@
 package com.appslab.gallery.ui.screens
 
+import com.appslab.gallery.ui.components.GlassMenu
+import com.appslab.gallery.ui.components.GlassMenuItem
 import androidx.compose.foundation.background
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -24,8 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -199,17 +199,9 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
 private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavController, tab: Int, backdrop: Backdrop, darkMode: Boolean) {
     var expanded by remember { mutableStateOf(false) }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val shape = RoundedCornerShape(20.dp)
     Box {
         GlassCircleButton(backdrop, darkMode, Icons.Rounded.MoreVert, "More options", onClick = { expanded = true })
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = shape,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shadowElevation = 16.dp,
-            modifier = Modifier.width(200.dp).shadow(16.dp, shape).clip(shape),
-        ) {
+        GlassMenu(expanded = expanded, onDismiss = { expanded = false }) {
             if (tab == TAB_PHOTOS || tab == TAB_VIDEOS) {
                 val newest = settings.sortOrder == SortOrder.DESCENDING
                 MenuEntry(
@@ -233,20 +225,5 @@ private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavControll
 
 @Composable
 private fun MenuEntry(icon: Int, title: String, subtitle: String? = null, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(icon), null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text(title, fontFamily = CqMono, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
-                    if (subtitle != null) {
-                        Text(subtitle, fontFamily = CqMono, fontSize = 12.sp, color = LocalCustomColors.current.unselectedItem)
-                    }
-                }
-            }
-        },
-        onClick = onClick,
-        modifier = Modifier.padding(vertical = 4.dp),
-    )
+    GlassMenuItem(painterResource(icon), title, subtitle, onClick = onClick)
 }

@@ -14,7 +14,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
@@ -60,6 +59,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -307,9 +308,12 @@ fun VideoPlayer(
         tween(if (controlsVisible) 150 else 200),
         label = "hud_alpha",
     )
+    // Record the video for the glass controls only while they show or fade.
+    val showing by rememberUpdatedState(controlsVisible)
+    val hudOn by remember { derivedStateOf { showing || hud > 0f } }
 
     Box(modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+        BackdropSource(backdrop, enabled = { hudOn }, modifier = Modifier.fillMaxSize()) {
             ZoomBox(resetKey = item.id, isCurrentPage = true, onTap = { onControlsChange(!controlsVisible) }) {
                 Box(Modifier.aspectRatio(aspect)) {
                     AndroidView(

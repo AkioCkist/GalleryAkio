@@ -1,5 +1,13 @@
 package com.appslab.gallery.ui.screens
 
+import com.appslab.gallery.ui.components.GlassScaffold
+import com.appslab.gallery.ui.components.GlassCircleButton
+import com.appslab.gallery.ui.components.GlassMenu
+import com.appslab.gallery.ui.components.GlassMenuItem
+import com.appslab.gallery.ui.components.GLASS_HEADER_SIZE
+import com.appslab.gallery.ui.components.glassIsDark
+import com.appslab.gallery.ui.components.gridPadding
+import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -32,16 +40,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -180,50 +184,32 @@ fun AlbumDetailScreen(viewModel: GalleryViewModel, navController: NavController,
     val selection = remember { SelectionState() }
     var menu by remember { mutableStateOf(false) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text((album?.name ?: "Album").uppercase(), fontFamily = CqMono, fontSize = 20.sp)
-                        Text("${items.size} items", fontSize = 12.sp, color = LocalCustomColors.current.unselectedItem)
+    GlassScaffold(
+        title = (album?.name ?: "Album").uppercase(),
+        subtitle = "${items.size} items",
+        onBack = { navController.popBackStack() },
+        actions = { backdrop ->
+            Box {
+                GlassCircleButton(backdrop, glassIsDark(), Icons.Filled.MoreVert, "More options", onClick = { menu = true }, size = GLASS_HEADER_SIZE)
+                GlassMenu(expanded = menu, onDismiss = { menu = false }) {
+                    val newest = settings.albumSortOrder == SortOrder.DESCENDING
+                    GlassMenuItem(painterResource(if (newest) R.drawable.order2 else R.drawable.order1), if (newest) "OLDEST FIRST" else "NEWEST FIRST") {
+                        menu = false
+                        viewModel.settingsRepo.setAlbumSortOrder(if (newest) SortOrder.ASCENDING else SortOrder.DESCENDING)
                     }
-                },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    GlassMenuItem(painterResource(R.drawable.date), if (settings.albumShowDates) "HIDE DATES" else "SHOW DATES") {
+                        menu = false
+                        viewModel.settingsRepo.setAlbumShowDates(!settings.albumShowDates)
                     }
-                },
-                actions = {
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More options") }
-                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(
-                                text = { Text(if (settings.albumSortOrder == SortOrder.DESCENDING) "OLDEST FIRST" else "NEWEST FIRST", fontFamily = CqMono) },
-                                onClick = {
-                                    menu = false
-                                    viewModel.settingsRepo.setAlbumSortOrder(
-                                        if (settings.albumSortOrder == SortOrder.DESCENDING) SortOrder.ASCENDING else SortOrder.DESCENDING,
-                                    )
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (settings.albumShowDates) "HIDE DATES" else "SHOW DATES", fontFamily = CqMono) },
-                                onClick = { menu = false; viewModel.settingsRepo.setAlbumShowDates(!settings.albumShowDates) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (album?.isPinned == true) "UNPIN ALBUM" else "PIN ALBUM", fontFamily = CqMono) },
-                                onClick = { menu = false; viewModel.settingsRepo.togglePinned(relativePath) },
-                            )
-                        }
+                    GlassMenuItem(painterResource(R.drawable.pinfill), if (album?.isPinned == true) "UNPIN ALBUM" else "PIN ALBUM") {
+                        menu = false
+                        viewModel.settingsRepo.togglePinned(relativePath)
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+                }
+            }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize()) {
             if (items.isEmpty() && !library.isLoading) {
                 CenteredMessage("No items in this album")
             } else {
@@ -237,6 +223,7 @@ fun AlbumDetailScreen(viewModel: GalleryViewModel, navController: NavController,
                     modifier = Modifier.fillMaxSize(),
                     favoriteIds = settings.favoriteIds,
                     darkMode = settings.darkMode,
+                    contentPadding = gridPadding(padding.calculateTopPadding()),
                 )
             }
             SelectionActions(viewModel, selection, items, Modifier.align(Alignment.BottomCenter))
@@ -252,19 +239,8 @@ fun FavoritesScreen(viewModel: GalleryViewModel, navController: NavController) {
     val items = remember(library.all, settings.favoriteIds) { viewModel.favorites() }
     val selection = remember { SelectionState() }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("FAVORITES", fontFamily = CqMono, fontSize = 20.sp) },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).navigationBarsPadding()) {
+    GlassScaffold(title = "FAVORITES", onBack = { navController.popBackStack() }) { padding ->
+        Box(Modifier.fillMaxSize()) {
             if (items.isEmpty()) {
                 CenteredMessage("No favorites yet", "Tap the heart while viewing a photo.")
             } else {
@@ -278,6 +254,7 @@ fun FavoritesScreen(viewModel: GalleryViewModel, navController: NavController) {
                     modifier = Modifier.fillMaxSize(),
                     favoriteIds = settings.favoriteIds,
                     darkMode = settings.darkMode,
+                    contentPadding = gridPadding(padding.calculateTopPadding()),
                 )
             }
             SelectionActions(viewModel, selection, items, Modifier.align(Alignment.BottomCenter))

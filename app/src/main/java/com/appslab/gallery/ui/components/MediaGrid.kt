@@ -1,5 +1,6 @@
 package com.appslab.gallery.ui.components
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.scrollBy
@@ -362,6 +363,9 @@ private val entryCache = RecentCache<EntryKey, List<Entry>>(capacity = MAX_COLUM
 private const val DAY_MS = 24L * 60 * 60 * 1000
 const val MIN_COLUMNS = 1
 const val MAX_COLUMNS = 6
+
+/** The grid's usual padding, starting [top] down (e.g. below a floating glass header). */
+fun gridPadding(top: Dp) = PaddingValues(start = 8.dp, end = 8.dp, top = top, bottom = 100.dp)
 /** How far ahead (seconds) the release velocity is projected when choosing the column count. */
 private const val FLING_PROJECTION = 0.12f
 /** Columns per second; caps a wild flick so the settle never races past the next layout. */
@@ -929,7 +933,10 @@ private fun DateHeader(
     }
 }
 
-/** Bottom bar shown while items are selected. */
+/**
+ * Floating glass capsule shown while items are selected, [bottomPadding] above the
+ * navigation bar (e.g. clear of the main tabs' own bar).
+ */
 @Composable
 fun SelectionBar(
     count: Int,
@@ -937,26 +944,28 @@ fun SelectionBar(
     onSelectAll: () -> Unit,
     onShare: (() -> Unit)?,
     onDelete: () -> Unit,
-    modifier: Modifier = Modifier,
+    bottomPadding: Dp = 0.dp,
     extra: @Composable () -> Unit = {},
 ) {
-    Surface(
-        modifier = modifier.padding(horizontal = 12.dp, vertical = 12.dp).fillMaxWidth(),
-        color = LocalCustomColors.current.cardBackground,
-        shape = RoundedCornerShape(28.dp),
-        shadowElevation = 12.dp,
+    GlassBottomBar(bottomPadding) {
+        val ink = LocalGlassContent.current
+        Box(
+            Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onCancel).padding(horizontal = 14.dp, vertical = 10.dp),
+        ) { Text("CANCEL", fontFamily = CqMono, fontSize = 13.sp, color = ink) }
+        Text("$count SELECTED", fontFamily = CqMono, fontSize = 13.sp, color = ink.copy(alpha = 0.7f), modifier = Modifier.padding(end = 6.dp))
+        SelectionIcon(painterResource(R.drawable.squrechek), "Select all", onSelectAll)
+        CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides ink) { extra() }
+        if (onShare != null) SelectionIcon(painterResource(R.drawable.share), "Share", onShare)
+        SelectionIcon(painterResource(R.drawable.delete), "Move to trash", onDelete)
+    }
+}
+
+@Composable
+private fun SelectionIcon(painter: androidx.compose.ui.graphics.painter.Painter, description: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onCancel) { Text("CANCEL", fontFamily = CqMono) }
-            Text(
-                "SELECTED $count", fontFamily = CqMono, fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onSelectAll) { Icon(painterResource(R.drawable.squrechek), "Select all") }
-            extra()
-            if (onShare != null) IconButton(onClick = onShare) { Icon(painterResource(R.drawable.share), "Share") }
-            IconButton(onClick = onDelete) { Icon(painterResource(R.drawable.delete), "Move to trash") }
-        }
+        Icon(painter, description, tint = LocalGlassContent.current, modifier = Modifier.size(20.dp))
     }
 }

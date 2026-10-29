@@ -19,6 +19,28 @@ import androidx.compose.animation.core.Transition
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import com.appslab.gallery.ui.components.BackdropSource
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.animation.core.Animatable
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.windowInsetsPadding
+import com.appslab.gallery.ui.components.GlassDialog
+import com.appslab.gallery.ui.components.GlassDialogButton
+import com.appslab.gallery.ui.components.GlassMenu
+import com.appslab.gallery.ui.components.GlassMenuItem
+import com.appslab.gallery.ui.components.GlassSheet
+import com.appslab.gallery.ui.components.GlassTextField
+import com.appslab.gallery.ui.components.LocalGlassContent
+import androidx.compose.foundation.shape.CircleShape
+import com.appslab.gallery.ui.components.liquidGlass
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.CompositionLocalProvider
 import com.appslab.gallery.ui.components.LocalViewerZoom
@@ -74,17 +96,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -162,7 +177,7 @@ fun PhotoDetailScreen(
     var renaming by remember { mutableStateOf(false) }
     var confirmTrash by remember { mutableStateOf(false) }
 
-    ImmersiveMode(fullscreen = !overlay)
+    ImmersiveMode(fullscreen = { !overlay })
     MaxBrightness(enabled = settings.maxBrightnessViewing)
 
     val trashConsent = rememberConsentLauncher { }
@@ -170,7 +185,13 @@ fun PhotoDetailScreen(
     val density = LocalDensity.current
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
     var landscape by remember { mutableStateOf(false) }
-    val overlayAlpha by animateFloatAsState(if (overlay) 1f else 0f, tween(if (overlay) 150 else 200), label = "overlay_alpha")
+    // Animated from an effect rather than animateFloatAsState, which would read `overlay`
+    // here and recompose the whole viewer (pager included) on every tap.
+    val overlayAlpha = remember { Animatable(1f) }
+    val barsOn by remember { derivedStateOf { overlay || overlayAlpha.value > 0f } }
+    LaunchedEffect(Unit) {
+        snapshotFlow { overlay }.collectLatest { shown -> overlayAlpha.animateTo(if (shown) 1f else 0f, tween(if (shown) 150 else 200)) }
+    }
     ForcedLandscape(landscape)
 
     // Open / close: the photo grows out of its grid tile and shrinks back into the tile of
@@ -210,6 +231,10 @@ fun PhotoDetailScreen(
     val dismissVelocity = with(density) { DISMISS_VELOCITY.toPx() }
     val scope = rememberCoroutineScope()
     val zoom = remember { ViewerZoom() }
+    val backdrop = rememberLayerBackdrop {
+        drawRect(Color.Black)
+        drawContent()
+    }
     val latestOnBack by rememberUpdatedState(onBack)
     // Remembered once: pointerInput restarts its gesture whenever its lambda changes, and a
     // fresh lambda each recomposition cut every swipe off after its first couple of events.
@@ -236,7 +261,10 @@ fun PhotoDetailScreen(
             .onSizeChanged { viewerHeight = it.height.toFloat() }
             .drawBehind { drawRect(Color.Black, alpha = progress() * (1f - DRAG_FADE * dragFraction())) },
     ) {
-        if (pagerReady) HorizontalPager(
+        // What the glass controls blur, recorded only while they show: a hidden HUD over a
+        // playing video then costs nothing per frame.
+        if (pagerReady) BackdropSource(backdrop, enabled = { barsOn }, modifier = Modifier.fillMaxSize()) {
+        HorizontalPager(
             state = pager,
             key = { items[it].id },
             beyondViewportPageCount = 1,
@@ -270,6 +298,7 @@ fun PhotoDetailScreen(
                 ZoomableImage(item, isCurrentPage = isCurrent, onTap = { overlay = !overlay })
             }
         }
+        }
         val flying = thumb != null && (!handedOff || closing)
         // The tile the photo flies out of (or back into) stays empty meanwhile.
         SideEffect { TileBounds.hiddenId = if (flying) current.id else TileBounds.NO_ID }
@@ -285,38 +314,33 @@ fun PhotoDetailScreen(
             )
         }
         // The bars get out of the way as soon as a swipe down starts.
-        val barsAlpha = { overlayAlpha * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f)) }
+        val barsAlpha = { overlayAlpha.value * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f)) }
 
-        // Scrims keep the white controls readable on bright photos without boxing them in.
-        FadingOverlay(overlay, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
+        // Floating liquid-glass controls, matching the video player's: the photo shows through
+        // them (blurred and bent at the edges), so no scrims are needed to keep them readable.
+        FadingOverlay({ overlay }, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
             TopBar(
+                backdrop = backdrop,
                 item = current,
                 landscape = landscape,
                 onBack = onBack,
                 onRotate = { landscape = !landscape },
                 onDetails = { showInfo = true },
                 onRename = { renaming = true },
-                modifier = Modifier.background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
             )
         }
-        FadingOverlay(overlay, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
-            // Photos fade into the bar. For videos only the action row gets a backing: a scrim
-            // over the controls area sat on top of the filmstrip and darkened its frames.
-            Column(
-                if (current.isVideo) Modifier
-                else Modifier.background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f)))),
-            ) {
+        FadingOverlay({ overlay }, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 // Room for the video controls and filmstrip, which the player draws itself.
-                Spacer(Modifier.height(if (current.isVideo) VIDEO_CONTROLS_HEIGHT else 24.dp))
+                if (current.isVideo) Spacer(Modifier.height(VIDEO_CONTROLS_HEIGHT))
                 BottomBar(
+                    backdrop = backdrop,
                     isFavorite = current.id in settings.favoriteIds,
                     onFavorite = { viewModel.settingsRepo.toggleFavorite(current.id) },
                     onDetails = { showInfo = true },
                     onShare = { shareItems(context, listOf(current)) },
                     onDelete = { confirmTrash = true },
-                    modifier = Modifier
-                        .let { if (current.isVideo) it.background(Color.Black.copy(alpha = 0.6f)) else it }
-                        .onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
+                    modifier = Modifier.onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
                 )
             }
         }
@@ -324,17 +348,19 @@ fun PhotoDetailScreen(
     }
 
     if (confirmTrash) {
-        AlertDialog(
-            onDismissRequest = { confirmTrash = false },
-            title = { Text("Move to Trash?", fontFamily = CqMono) },
-            text = { Text(current.displayName) },
-            confirmButton = {
-                TextButton(onClick = { confirmTrash = false; trashConsent(viewModel.trashRequest(listOf(current))) }) {
-                    Text("Trash", color = MaterialTheme.colorScheme.error)
-                }
+        GlassDialog(
+            onDismiss = { confirmTrash = false },
+            title = "MOVE TO TRASH?",
+            buttons = {
+                GlassDialogButton("Cancel", onClick = { confirmTrash = false })
+                GlassDialogButton("Trash", color = TrashRed, onClick = {
+                    confirmTrash = false
+                    trashConsent(viewModel.trashRequest(listOf(current)))
+                })
             },
-            dismissButton = { TextButton(onClick = { confirmTrash = false }) { Text("Cancel") } },
-        )
+        ) {
+            Text(current.displayName, color = LocalGlassContent.current.copy(alpha = 0.75f), fontSize = 14.sp)
+        }
     }
     if (showInfo) InfoSheet(current, onDismiss = { showInfo = false })
     if (renaming) RenameDialog(viewModel, current, onDismiss = { renaming = false })
@@ -344,6 +370,10 @@ private val dayFormat = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
 private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
 private val VIDEO_CONTROLS_HEIGHT = 120.dp
+private val TrashRed = Color(0xFFFF5A5A)
+/** Glass buttons and pills: the video player's control size. */
+private val GLASS_SIZE = 36.dp
+private val GLASS_BAR_HEIGHT = 48.dp
 /** Open/close spring: critically damped, about a third of a second. */
 private const val TRANSITION_STIFFNESS = 420f
 /** How far down (or how fast) a swipe must go to close the viewer instead of springing back. */
@@ -366,13 +396,11 @@ private fun Modifier.swipeToDismiss(
 ): Modifier = pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        android.util.Log.d("SWIPEDBG", "down enabled=${enabled()}")
         if (!enabled()) return@awaitEachGesture
         var total = Offset.Zero
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
-            android.util.Log.d("SWIPEDBG", "move pressed=${change.pressed} consumed=${change.isConsumed} total=$total")
             if (!change.pressed || change.isConsumed || event.changes.count { it.pressed } > 1) return@awaitEachGesture
             total += change.positionChange()
             if (total.getDistance() > viewConfiguration.touchSlop) {
@@ -385,10 +413,11 @@ private fun Modifier.swipeToDismiss(
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             tracker.addPointerInputChange(change)
+            // Read the move before consuming: a consumed change reports no movement.
+            val delta = change.positionChange()
             event.changes.forEach { it.consume() }
             if (!change.pressed) break
-            offset += change.positionChange()
-            android.util.Log.d("SWIPEDBG", "drag $offset")
+            offset += delta
             onDrag(offset)
         }
         onRelease(tracker.calculateVelocity())
@@ -402,21 +431,34 @@ private fun Modifier.swipeToDismiss(
  */
 @Composable
 private fun FadingOverlay(
-    visible: Boolean,
+    visible: () -> Boolean,
     alpha: () -> Float,
     onReveal: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    Box(modifier.graphicsLayer { this.alpha = alpha() }) {
+    Box(
+        modifier.graphicsLayer {
+            this.alpha = alpha()
+            // Fade each draw instead of the group through an offscreen layer: allocating
+            // those (one per glass control) made the first frame of every fade a long one.
+            compositingStrategy = CompositingStrategy.ModulateAlpha
+        },
+    ) {
         content()
-        if (!visible) Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { onReveal() } })
+        // Read here, not by the caller: a toggle then recomposes only this one Box.
+        if (!visible()) Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { onReveal() } })
     }
 }
 
-/** Samsung Gallery style: back on the left; rotate (videos) and the overflow menu on the right. */
+/**
+ * Floating glass controls: a back button, the date in a pill (photos), and rotate (videos)
+ * and the overflow menu on the right. Same 36dp glass as the video player's controls.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TopBar(
+    backdrop: Backdrop,
     item: MediaItem,
     landscape: Boolean,
     onBack: () -> Unit,
@@ -430,34 +472,39 @@ private fun TopBar(
     Row(
         modifier
             .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 4.dp, vertical = 4.dp)
-            .padding(bottom = 28.dp),
+            // Padded for the status bar even while it is hidden: following it as it slides in
+            // and out re-laid out (and re-blurred) the bars on every frame of the HUD fade.
+            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        TopIcon(painterResource(R.drawable.back2), "Back", onClick = onBack)
-        Column(Modifier.weight(1f).padding(start = 4.dp)) {
-            if (!item.isVideo) {
-                val date = Date(item.dateTaken)
-                Text(dayFormat.format(date), color = Color.White, fontSize = 15.sp, maxLines = 1)
-                Text(timeFormat.format(date), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1)
+        GlassButton(backdrop, painterResource(R.drawable.back2), "Back", onClick = onBack)
+        if (!item.isVideo) {
+            val date = Date(item.dateTaken)
+            Row(
+                Modifier
+                    .height(GLASS_SIZE)
+                    .liquidGlass(backdrop, darkMode = true, lensHeight = 6.dp, lensAmount = 12.dp)
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(dayFormat.format(date), color = Color.White, fontSize = 13.sp, maxLines = 1)
+                Text("  ·  " + timeFormat.format(date), color = Color.White.copy(alpha = 0.65f), fontSize = 13.sp, maxLines = 1)
             }
         }
+        Spacer(Modifier.weight(1f))
         if (item.isVideo) {
-            TopIcon(
+            GlassButton(
+                backdrop,
                 rememberVectorPainter(Icons.Rounded.ScreenRotation),
                 if (landscape) "Portrait" else "Rotate to landscape",
                 onClick = onRotate,
             )
         }
         Box {
-            TopIcon(painterResource(R.drawable.more2), "More") { menu = true }
-            DropdownMenu(
-                expanded = menu,
-                onDismissRequest = { menu = false },
-                shape = RoundedCornerShape(16.dp),
-                containerColor = MaterialTheme.colorScheme.surface,
-            ) {
+            GlassButton(backdrop, painterResource(R.drawable.more2), "More") { menu = true }
+            GlassMenu(expanded = menu, onDismiss = { menu = false }) {
                 MoreItem(R.drawable.info, "DETAILS") { menu = false; onDetails() }
                 if (!item.isVideo) {
                     MoreItem(R.drawable.wallpaper, "SET WALLPAPER") {
@@ -479,16 +526,26 @@ private fun TopBar(
     }
 }
 
+/** Round glass button, the size of the video player's controls. */
 @Composable
-private fun TopIcon(painter: Painter, description: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
-        Icon(painter, description, tint = Color.White, modifier = Modifier.size(24.dp))
+private fun GlassButton(backdrop: Backdrop, painter: Painter, description: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(GLASS_SIZE)
+            .liquidGlass(backdrop, darkMode = true, lensHeight = 6.dp, lensAmount = 12.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(painter, description, tint = Color.White, modifier = Modifier.size(18.dp))
     }
 }
 
-/** Icon-only actions, evenly spaced, as in Samsung Gallery. */
+/** The actions in one compact glass capsule, centred above the navigation bar. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BottomBar(
+    backdrop: Backdrop,
     isFavorite: Boolean,
     onFavorite: () -> Unit,
     onDetails: () -> Unit,
@@ -496,30 +553,37 @@ private fun BottomBar(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceAround,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BarButton(
-            rememberVectorPainter(if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder),
-            if (isFavorite) "Remove from favorites" else "Add to favorites",
-            tint = if (isFavorite) Color(0xFFFF4D4D) else Color.White,
-            onClick = onFavorite,
-        )
-        BarButton(painterResource(R.drawable.info), "Details", onClick = onDetails)
-        BarButton(painterResource(R.drawable.share), "Share", onClick = onShare)
-        BarButton(painterResource(R.drawable.delete), "Delete", onClick = onDelete)
+    Box(modifier.windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility).padding(top = 8.dp, bottom = 12.dp)) {
+        Row(
+            Modifier
+                .height(GLASS_BAR_HEIGHT)
+                .liquidGlass(backdrop, darkMode = true)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BarButton(
+                rememberVectorPainter(if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder),
+                if (isFavorite) "Remove from favorites" else "Add to favorites",
+                tint = if (isFavorite) Color(0xFFFF4D4D) else Color.White,
+                onClick = onFavorite,
+            )
+            BarButton(painterResource(R.drawable.info), "Details", onClick = onDetails)
+            BarButton(painterResource(R.drawable.share), "Share", onClick = onShare)
+            BarButton(painterResource(R.drawable.delete), "Delete", onClick = onDelete)
+        }
     }
 }
 
 @Composable
 private fun BarButton(painter: Painter, description: String, tint: Color = Color.White, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(56.dp)) {
-        Icon(painter, description, tint = tint, modifier = Modifier.size(26.dp))
+    Box(
+        Modifier
+            .size(width = 52.dp, height = GLASS_BAR_HEIGHT)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(painter, description, tint = tint, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -536,17 +600,7 @@ private fun ForcedLandscape(enabled: Boolean) {
 
 @Composable
 private fun MoreItem(icon: Int, label: String, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(icon), null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(15.dp))
-                Text(label, fontFamily = CqMono, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-            }
-        },
-        onClick = onClick,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-    )
+    GlassMenuItem(painterResource(icon), label, onClick = onClick)
 }
 
 private fun attachIntent(item: MediaItem) = Intent(Intent.ACTION_ATTACH_DATA).apply {
@@ -612,7 +666,6 @@ private fun readExif(context: Context, item: MediaItem): ExifData? = runCatching
     }
 }.getOrNull()
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun InfoSheet(item: MediaItem, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -620,9 +673,9 @@ private fun InfoSheet(item: MediaItem, onDismiss: () -> Unit) {
         value = if (item.isVideo) null else withContext(Dispatchers.IO) { readExif(context, item) }
     }
     val dateFmt = remember { SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault()) }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
-            Text("DETAILS", fontFamily = CqMono, fontSize = 18.sp)
+    GlassSheet(onDismiss = onDismiss) {
+        Column {
+            Text("DETAILS", fontFamily = CqMono, fontSize = 18.sp, color = LocalGlassContent.current)
             Spacer(Modifier.height(12.dp))
             InfoRow("Name", item.displayName)
             InfoRow("Date", dateFmt.format(Date(item.dateTaken)))
@@ -648,8 +701,8 @@ private fun InfoSheet(item: MediaItem, onDismiss: () -> Unit) {
 @Composable
 private fun InfoRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Text(label.uppercase(), fontFamily = CqMono, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.width(100.dp))
-        Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+        Text(label.uppercase(), fontFamily = CqMono, fontSize = 12.sp, color = LocalGlassContent.current.copy(alpha = 0.55f), modifier = Modifier.width(100.dp))
+        Text(value, fontSize = 13.sp, color = LocalGlassContent.current)
     }
 }
 
@@ -675,42 +728,35 @@ private fun RenameDialog(viewModel: GalleryViewModel, item: MediaItem, onDismiss
     }
     val consent = rememberConsentLauncher { approved -> if (approved) doRename() else onDismiss() }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("RENAME", fontFamily = CqMono) },
-        text = {
-            Column {
-                Text("ENTER NEW NAME FOR THE FILE:", fontSize = 12.sp)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    singleLine = true,
-                    isError = error != null,
-                    suffix = { Text(ext) },
-                    supportingText = { error?.let { Text(it) } },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                )
-                Text("NOTE: THE FILE EXTENSION ($ext) IS KEPT", fontSize = 10.sp)
-            }
+    val submit = { if (error == null) consent(viewModel.writeRequest(listOf(item))) }
+    GlassDialog(
+        onDismiss = onDismiss,
+        title = "RENAME",
+        buttons = {
+            GlassDialogButton("Cancel", onClick = onDismiss)
+            GlassDialogButton("Rename", enabled = error == null, onClick = submit)
         },
-        confirmButton = {
-            TextButton(enabled = error == null, onClick = { consent(viewModel.writeRequest(listOf(item))) }) { Text("Rename") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+    ) {
+        val content = LocalGlassContent.current
+        GlassTextField(name, { name = it }, suffix = ext, isError = error != null, onDone = submit)
+        Spacer(Modifier.height(6.dp))
+        Text(error ?: "The extension ($ext) is kept", fontSize = 11.sp, color = if (error != null) TrashRed else content.copy(alpha = 0.55f))
+    }
 }
 
+/** Hides the system bars while [fullscreen]; read in an effect, so a toggle recomposes nothing. */
 @Composable
-private fun ImmersiveMode(fullscreen: Boolean) {
+private fun ImmersiveMode(fullscreen: () -> Boolean) {
     val activity = LocalContext.current as? Activity ?: return
-    DisposableEffect(fullscreen) {
-        val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+    val controller = remember(activity) { WindowCompat.getInsetsController(activity.window, activity.window.decorView) }
+    LaunchedEffect(controller) {
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (fullscreen) controller.hide(WindowInsetsCompat.Type.systemBars())
-        else controller.show(WindowInsetsCompat.Type.systemBars())
-        onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
+        snapshotFlow(fullscreen).collect {
+            if (it) controller.hide(WindowInsetsCompat.Type.systemBars())
+            else controller.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
+    DisposableEffect(controller) { onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) } }
 }
 
 @Composable

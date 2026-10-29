@@ -1,5 +1,9 @@
 package com.appslab.gallery.ui.screens
 
+import com.appslab.gallery.ui.components.GlassDialog
+import com.appslab.gallery.ui.components.GlassDialogButton
+import com.appslab.gallery.ui.components.LocalGlassContent
+import androidx.compose.ui.graphics.Color
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,11 +11,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -133,22 +135,26 @@ fun SelectionActions(
         onShare = { shareItems(context, selectedItems) },
         onDelete = { confirmTrash = true },
         // Sits above the floating nav bar on the main tabs (0 elsewhere).
-        modifier = modifier.navigationBarsPadding().padding(bottom = LocalBottomBarPadding.current),
+        bottomPadding = LocalBottomBarPadding.current,
     )
 
     if (confirmTrash) {
-        AlertDialog(
-            onDismissRequest = { confirmTrash = false },
-            title = { Text("Move to Trash?", fontFamily = CqMono) },
-            text = { Text("Move ${selectedItems.size} item(s) to the trash. They can be restored for 30 days.") },
-            confirmButton = {
-                TextButton(onClick = {
+        GlassDialog(
+            onDismiss = { confirmTrash = false },
+            title = "MOVE TO TRASH?",
+            buttons = {
+                GlassDialogButton("Cancel", onClick = { confirmTrash = false })
+                GlassDialogButton("Trash", color = Color(0xFFFF5A5A), onClick = {
                     confirmTrash = false
                     consent(viewModel.trashRequest(selectedItems))
-                }) { Text("Trash", color = MaterialTheme.colorScheme.error) }
+                })
             },
-            dismissButton = { TextButton(onClick = { confirmTrash = false }) { Text("Cancel") } },
-        )
+        ) {
+            Text(
+                "Move ${selectedItems.size} item(s) to the trash. They can be restored for 30 days.",
+                color = LocalGlassContent.current.copy(alpha = 0.75f), fontSize = 14.sp,
+            )
+        }
     }
 }
 

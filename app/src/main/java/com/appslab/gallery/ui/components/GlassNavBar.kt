@@ -21,13 +21,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.appslab.gallery.ui.theme.CqMono
+import androidx.compose.foundation.layout.BoxScope
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -50,20 +54,39 @@ private fun glassColors(darkMode: Boolean) =
     if (darkMode) GlassColors(Color(0xFF121212).copy(alpha = 0.45f), Color.White, Color.White.copy(alpha = 0.14f))
     else GlassColors(Color(0xFFFAFAFA).copy(alpha = 0.5f), Color(0xFF151515), Color.Black.copy(alpha = 0.08f))
 
+/**
+ * Records [content] into [backdrop] only while [enabled], i.e. while some glass over it is
+ * showing. A recorded backdrop costs a second draw of the content on every frame it changes
+ * (every frame of a playing video), whether or not any glass is visible to use it.
+ * [enabled] is read here, so flipping it recomposes only this Box.
+ */
+@Composable
+fun BackdropSource(
+    backdrop: LayerBackdrop,
+    enabled: () -> Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(modifier.then(if (enabled()) Modifier.layerBackdrop(backdrop) else Modifier), content = content)
+}
+
 /** Liquid glass surface: the content behind is blurred, saturated and bent at the edges. */
 fun Modifier.liquidGlass(
     backdrop: Backdrop,
     darkMode: Boolean,
     lensHeight: Dp = 8.dp,
     lensAmount: Dp = 16.dp,
+    shape: Shape = CapsuleShape,
+    blurRadius: Dp = 4.dp,
+    /** Tint over the blur; panels with text use a denser one than the default. */
+    surface: Color = glassColors(darkMode).surface,
 ): Modifier {
-    val surface = glassColors(darkMode).surface
     return drawBackdrop(
         backdrop = backdrop,
-        shape = { CapsuleShape },
+        shape = { shape },
         effects = {
             vibrancy()
-            blur(4.dp.toPx())
+            blur(blurRadius.toPx())
             lens(lensHeight.toPx(), lensAmount.toPx())
         },
         onDrawSurface = { drawRect(surface) },

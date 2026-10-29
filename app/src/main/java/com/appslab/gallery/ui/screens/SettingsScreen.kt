@@ -1,5 +1,10 @@
 package com.appslab.gallery.ui.screens
 
+import com.appslab.gallery.ui.components.GlassScaffold
+import com.appslab.gallery.ui.components.GlassDialog
+import com.appslab.gallery.ui.components.GlassDialogButton
+import com.appslab.gallery.ui.components.GlassChoiceRow
+import com.appslab.gallery.ui.components.LocalGlassContent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -27,21 +32,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,19 +90,10 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
     val repo = viewModel.settingsRepo
     var dialog by remember { mutableStateOf<SettingsDialog?>(null) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("SETTINGS", fontFamily = CqMono, fontSize = 22.sp) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-    ) { padding ->
+    GlassScaffold(title = "SETTINGS", onBack = onBack) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding(), bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item { SectionHeader("PERSONALIZE YOUR GALLERY") }
@@ -261,24 +250,24 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
     }
 
     when (dialog) {
-        SettingsDialog.RESET -> AlertDialog(
-            onDismissRequest = { dialog = null },
-            title = { Text("Restore defaults?", fontFamily = CqMono) },
-            text = {
-                Text(
-                    "Theme, layout, sorting, filters, viewing and AI search settings go back to how the app first came. " +
-                        "Your photos, favorites and pinned albums are not touched.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
+        SettingsDialog.RESET -> GlassDialog(
+            onDismiss = { dialog = null },
+            title = "RESTORE DEFAULTS?",
+            buttons = {
+                GlassDialogButton("Cancel", onClick = { dialog = null })
+                GlassDialogButton("Restore", color = Color(0xFFFF5A5A), onClick = {
                     repo.resetToDefaults()
                     dialog = null
                     Toast.makeText(context, "Settings restored to default", Toast.LENGTH_SHORT).show()
-                }) { Text("Restore", color = MaterialTheme.colorScheme.error) }
+                })
             },
-            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
-        )
+        ) {
+            Text(
+                "Theme, layout, sorting, filters, viewing and AI search settings go back to how the app first came. " +
+                    "Your photos, favorites and pinned albums are not touched.",
+                color = LocalGlassContent.current.copy(alpha = 0.75f), fontSize = 14.sp,
+            )
+        }
         SettingsDialog.SORT -> ChoiceDialog(
             title = "Sort photos",
             options = SortOption.entries,
@@ -469,56 +458,41 @@ private fun <T> ChoiceDialog(
     onDismiss: () -> Unit,
     description: ((T) -> String)? = null,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title, fontFamily = CqMono) },
-        text = {
-            LazyColumn {
-                items(options) { option ->
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onSelect(option); onDismiss() }.padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = option == selected, onClick = { onSelect(option); onDismiss() })
-                        Column {
-                            Text(label(option))
-                            description?.let { Text(it(option), fontSize = 12.sp, color = LocalCustomColors.current.unselectedItem) }
-                        }
-                    }
-                }
+    GlassDialog(
+        onDismiss = onDismiss,
+        title = title.uppercase(),
+        buttons = { GlassDialogButton("Done", onClick = onDismiss) },
+    ) {
+        options.forEach { option ->
+            GlassChoiceRow(label(option), selected = option == selected, description = description?.invoke(option)) {
+                onSelect(option)
+                onDismiss()
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
+        }
+    }
 }
 
 @Composable
 private fun FilterDialog(selected: Set<MediaFilterType>, onApply: (Set<MediaFilterType>) -> Unit, onDismiss: () -> Unit) {
     var current by remember { mutableStateOf(selected.ifEmpty { MediaFilterType.entries.toSet() }) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Filter Media Types", fontFamily = CqMono) },
-        text = {
-            Column {
-                Text("Select media types to display", fontSize = 12.sp)
-                MediaFilterType.entries.forEach { type ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { current = if (type in current) current - type else current + type },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(checked = type in current, onCheckedChange = { current = if (it) current + type else current - type })
-                        Text(type.label)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
+    GlassDialog(
+        onDismiss = onDismiss,
+        title = "FILTER MEDIA TYPES",
+        buttons = {
+            GlassDialogButton("Cancel", onClick = onDismiss)
+            GlassDialogButton(
+                "Done",
                 enabled = current.isNotEmpty(),
                 // Everything selected is stored as "no filter".
                 onClick = { onApply(if (current.size == MediaFilterType.entries.size) emptySet() else current) },
-            ) { Text("Done") }
+            )
         },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+    ) {
+        Text("Select media types to display", fontSize = 12.sp, color = LocalGlassContent.current.copy(alpha = 0.6f))
+        MediaFilterType.entries.forEach { type ->
+            GlassChoiceRow(type.label, selected = type in current) {
+                current = if (type in current) current - type else current + type
+            }
+        }
+    }
 }
