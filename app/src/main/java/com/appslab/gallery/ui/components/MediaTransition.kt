@@ -107,6 +107,9 @@ fun ViewerTransitionLayer(
     tile: () -> Rect?,
     tileCornerPx: Float,
     modifier: Modifier = Modifier,
+    /** Where a swipe-down left the photo (moved, and shrunk about the screen centre); closing starts there. */
+    dragOffset: () -> Offset = { Offset.Zero },
+    dragScale: () -> Float = { 1f },
 ) {
     val paint = remember(bitmap) {
         Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
@@ -123,9 +126,9 @@ fun ViewerTransitionLayer(
                 val bw = bitmap.width.toFloat()
                 val bh = bitmap.height.toFloat()
                 // Where the photo sits once open: fitted and centred, as the viewer shows it.
-                val fit = minOf(size.width / bw, size.height / bh)
+                val fit = minOf(size.width / bw, size.height / bh) * dragScale()
                 val full = Rect(
-                    Offset((size.width - bw * fit) / 2, (size.height - bh * fit) / 2),
+                    Offset((size.width - bw * fit) / 2, (size.height - bh * fit) / 2) + dragOffset(),
                     Size(bw * fit, bh * fit),
                 )
                 val windowTile = tile()

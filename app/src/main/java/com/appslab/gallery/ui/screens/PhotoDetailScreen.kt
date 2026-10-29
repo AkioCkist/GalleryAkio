@@ -19,6 +19,22 @@ import androidx.compose.animation.core.Transition
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.CompositionLocalProvider
+import com.appslab.gallery.ui.components.LocalViewerZoom
+import com.appslab.gallery.ui.components.ViewerZoom
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animate
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.unit.Velocity
+import kotlin.math.abs
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.draw.drawBehind
 import coil3.SingletonImageLoader
@@ -183,18 +199,61 @@ fun PhotoDetailScreen(
         handedOff = true
     }
 
-    Box(Modifier.fillMaxSize().drawBehind { drawRect(Color.Black, alpha = progress()) }) {
+    // Swipe down to close: the photo follows the finger and shrinks while the black fades.
+    // Let go far or fast enough and the close motion carries on from wherever it was left.
+    // Like progress, the offset is only read while drawing.
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var viewerHeight by remember { mutableFloatStateOf(1f) }
+    val dragFraction = { (dragOffset.y / (viewerHeight / 2)).coerceIn(0f, 1f) }
+    val dragScale = { 1f - DRAG_SHRINK * dragFraction() }
+    val dismissDistance = with(density) { DISMISS_DISTANCE.toPx() }
+    val dismissVelocity = with(density) { DISMISS_VELOCITY.toPx() }
+    val scope = rememberCoroutineScope()
+    val zoom = remember { ViewerZoom() }
+    val latestOnBack by rememberUpdatedState(onBack)
+    // Remembered once: pointerInput restarts its gesture whenever its lambda changes, and a
+    // fresh lambda each recomposition cut every swipe off after its first couple of events.
+    // Everything it reads is state, so it never goes stale.
+    val dismissGesture = remember {
+        Modifier.swipeToDismiss(
+            enabled = { handedOff && !zoom.zoomed && transition?.targetState != EnterExitState.PostExit },
+            onDrag = { dragOffset = it },
+            onRelease = { velocity ->
+                if (dragOffset.y > dismissDistance || velocity.y > dismissVelocity) latestOnBack()
+                else scope.launch {
+                    animate(Offset.VectorConverter, dragOffset, Offset.Zero, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) { v, _ ->
+                        dragOffset = v
+                    }
+                }
+            },
+        )
+    }
+
+    CompositionLocalProvider(LocalViewerZoom provides zoom) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { viewerHeight = it.height.toFloat() }
+            .drawBehind { drawRect(Color.Black, alpha = progress() * (1f - DRAG_FADE * dragFraction())) },
+    ) {
         if (pagerReady) HorizontalPager(
             state = pager,
             key = { items[it].id },
             beyondViewportPageCount = 1,
-            modifier = Modifier.fillMaxSize().graphicsLayer {
-                alpha = when {
-                    thumb == null -> progress()
-                    closing -> 0f
-                    else -> 1f
-                }
-            },
+            modifier = Modifier
+                .fillMaxSize()
+                .then(dismissGesture)
+                .graphicsLayer {
+                    translationX = dragOffset.x
+                    translationY = dragOffset.y
+                    scaleX = dragScale()
+                    scaleY = dragScale()
+                    alpha = when {
+                        thumb == null -> progress()
+                        closing -> 0f
+                        else -> 1f
+                    }
+                },
         ) { page ->
             val item = items[page]
             val isCurrent = page == pager.currentPage
@@ -221,11 +280,15 @@ fun PhotoDetailScreen(
                 progress = progress,
                 tile = { TileBounds.find(current.id) },
                 tileCornerPx = tileCornerPx,
+                dragOffset = { dragOffset },
+                dragScale = dragScale,
             )
         }
+        // The bars get out of the way as soon as a swipe down starts.
+        val barsAlpha = { overlayAlpha * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f)) }
 
         // Scrims keep the white controls readable on bright photos without boxing them in.
-        FadingOverlay(overlay, { overlayAlpha * progress() }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
+        FadingOverlay(overlay, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
             TopBar(
                 item = current,
                 landscape = landscape,
@@ -236,7 +299,7 @@ fun PhotoDetailScreen(
                 modifier = Modifier.background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
             )
         }
-        FadingOverlay(overlay, { overlayAlpha * progress() }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
+        FadingOverlay(overlay, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
             // Photos fade into the bar. For videos only the action row gets a backing: a scrim
             // over the controls area sat on top of the filmstrip and darkened its frames.
             Column(
@@ -257,6 +320,7 @@ fun PhotoDetailScreen(
                 )
             }
         }
+    }
     }
 
     if (confirmTrash) {
@@ -282,6 +346,54 @@ private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 private val VIDEO_CONTROLS_HEIGHT = 120.dp
 /** Open/close spring: critically damped, about a third of a second. */
 private const val TRANSITION_STIFFNESS = 420f
+/** How far down (or how fast) a swipe must go to close the viewer instead of springing back. */
+private val DISMISS_DISTANCE = 120.dp
+private val DISMISS_VELOCITY = 1200.dp
+/** At half the screen's height of swipe: the photo is this much smaller and the black this much lighter. */
+private const val DRAG_SHRINK = 0.35f
+private const val DRAG_FADE = 0.9f
+
+/**
+ * One-finger swipe down. Watched on the Initial pass, ahead of the pager and the photo: once
+ * the finger has moved past touch slop mostly downwards, the drag is claimed and consumed so
+ * neither reacts. Sideways moves are left to the pager; [enabled] is false while zoomed (the
+ * photo pans instead) and a second finger hands the gesture to pinch.
+ */
+private fun Modifier.swipeToDismiss(
+    enabled: () -> Boolean,
+    onDrag: (Offset) -> Unit,
+    onRelease: (Velocity) -> Unit,
+): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        android.util.Log.d("SWIPEDBG", "down enabled=${enabled()}")
+        if (!enabled()) return@awaitEachGesture
+        var total = Offset.Zero
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+            android.util.Log.d("SWIPEDBG", "move pressed=${change.pressed} consumed=${change.isConsumed} total=$total")
+            if (!change.pressed || change.isConsumed || event.changes.count { it.pressed } > 1) return@awaitEachGesture
+            total += change.positionChange()
+            if (total.getDistance() > viewConfiguration.touchSlop) {
+                if (total.y > 0f && total.y > abs(total.x)) break else return@awaitEachGesture
+            }
+        }
+        val tracker = VelocityTracker()
+        var offset = Offset.Zero
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            tracker.addPointerInputChange(change)
+            event.changes.forEach { it.consume() }
+            if (!change.pressed) break
+            offset += change.positionChange()
+            android.util.Log.d("SWIPEDBG", "drag $offset")
+            onDrag(offset)
+        }
+        onRelease(tracker.calculateVelocity())
+    }
+}
 
 /**
  * Bars that stay composed and only fade. Composing them on every tap (as AnimatedVisibility

@@ -21,6 +21,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -71,6 +73,13 @@ fun ZoomableImage(
     }
 }
 
+/** Whether the viewer's current page is zoomed in; written by [ZoomBox], read by the viewer's gestures. */
+class ViewerZoom {
+    var zoomed = false
+}
+
+val LocalViewerZoom = staticCompositionLocalOf { ViewerZoom() }
+
 /**
  * Pinch / double-tap zoom for any content (photos and videos). Single-finger drags pass
  * through to the parent pager while not zoomed, so swiping between items keeps working.
@@ -89,6 +98,11 @@ fun ZoomBox(
     var offset by remember { mutableStateOf(Offset.Zero) }
     var size by remember { mutableStateOf(IntSize.Zero) }
 
+    // Tell the viewer whether the photo on screen is zoomed (a swipe down then pans instead of closing).
+    val zoomState = LocalViewerZoom.current
+    LaunchedEffect(isCurrentPage, zoomState) {
+        if (isCurrentPage) snapshotFlow { scale.value > 1.01f }.collect { zoomState.zoomed = it }
+    }
     // Reset zoom when the user swipes away.
     LaunchedEffect(isCurrentPage) {
         if (!isCurrentPage) {
