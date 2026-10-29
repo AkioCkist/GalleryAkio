@@ -56,6 +56,34 @@ enum class SortOption(val label: String, val description: String, val value: Str
 
 enum class SortOrder { ASCENDING, DESCENDING }
 
+/**
+ * Grid styles, modelled on popular gallery apps.
+ * [defaultSpacing], [cornerRadius] and [border] describe each style's look.
+ */
+enum class GridStyle(
+    val label: String,
+    val description: String,
+    val defaultSpacing: Int,
+    val cornerRadius: Int,
+    val border: Boolean,
+) {
+    NOTHING("Nothing", "Original: rounded tiles with a thin border", 4, 18, true),
+    CLASSIC("Classic", "Edge-to-edge squares, like Google Photos and Samsung Gallery", 2, 0, false),
+    ROUNDED("Rounded", "Soft rounded squares without borders, like One UI", 4, 12, false),
+    MOSAIC("Mosaic", "Rows that keep each photo's shape, like Apple Photos and Aves", 2, 6, false),
+    MASONRY("Masonry", "Columns of uncropped photos, Pinterest style", 4, 12, false),
+    LIST("List", "One row per item with name, date and size, like Aves", 0, 10, false);
+
+    val isSquare get() = this == NOTHING || this == CLASSIC || this == ROUNDED
+}
+
+/** Gap between tiles. AUTO uses the style's own spacing. */
+enum class GridSpacing(val label: String, val dp: Int?) {
+    AUTO("Auto", null), NONE("None", 0), SMALL("Small", 2), MEDIUM("Medium", 4), LARGE("Large", 8);
+
+    fun resolve(style: GridStyle) = dp ?: style.defaultSpacing
+}
+
 /** [value] is what the original app stored under the "media_filters" preference. */
 enum class MediaFilterType(
     val label: String,

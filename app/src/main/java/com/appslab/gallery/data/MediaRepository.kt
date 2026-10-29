@@ -66,6 +66,7 @@ class MediaRepository(context: Context) {
             add(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
             add(if (type == MediaType.PHOTO) MediaStore.Images.Media.DATE_TAKEN else MediaStore.Video.Media.DATE_TAKEN)
             if (type == MediaType.VIDEO) add(MediaStore.Video.Media.DURATION)
+            if (type == MediaType.PHOTO) add(MediaStore.Images.ImageColumns.ORIENTATION)
             if (Build.VERSION.SDK_INT >= 29) add(MediaStore.MediaColumns.RELATIVE_PATH)
             else @Suppress("DEPRECATION") add(MediaStore.MediaColumns.DATA)
         }.toTypedArray()
@@ -95,6 +96,7 @@ class MediaRepository(context: Context) {
             val bucketCol = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
             val takenCol = c.getColumnIndex(MediaStore.MediaColumns.DATE_TAKEN)
             val durationCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
+            val orientationCol = c.getColumnIndex(MediaStore.Images.ImageColumns.ORIENTATION)
             val relCol = if (Build.VERSION.SDK_INT >= 29) c.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH) else -1
             @Suppress("DEPRECATION")
             val dataCol = if (Build.VERSION.SDK_INT < 29) c.getColumnIndex(MediaStore.MediaColumns.DATA) else -1
@@ -121,8 +123,9 @@ class MediaRepository(context: Context) {
                     relativePath = relativePath,
                     bucketName = (if (bucketCol >= 0) c.getString(bucketCol) else null)
                         ?: relativePath.trimEnd('/').substringAfterLast('/').ifEmpty { "Unknown" },
-                    width = if (widthCol >= 0) c.getInt(widthCol) else 0,
-                    height = if (heightCol >= 0) c.getInt(heightCol) else 0,
+                    // WIDTH/HEIGHT are the stored pixels; swap for photos rotated by EXIF.
+                    width = if (rotated(c, orientationCol)) c.getIntOrZero(heightCol) else c.getIntOrZero(widthCol),
+                    height = if (rotated(c, orientationCol)) c.getIntOrZero(widthCol) else c.getIntOrZero(heightCol),
                     duration = if (durationCol >= 0) c.getLong(durationCol) else null,
                     isTrashed = trashed,
                 )
@@ -193,6 +196,10 @@ class MediaRepository(context: Context) {
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
     }
+
+    private fun rotated(c: Cursor, col: Int) = col >= 0 && (c.getInt(col) == 90 || c.getInt(col) == 270)
+
+    private fun Cursor.getIntOrZero(col: Int) = if (col >= 0) getInt(col) else 0
 
     private fun relativePathFromData(data: String?): String {
         if (data.isNullOrEmpty()) return ""

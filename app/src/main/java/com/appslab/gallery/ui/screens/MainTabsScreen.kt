@@ -53,7 +53,10 @@ import com.appslab.gallery.ui.theme.CqMono
 import com.appslab.gallery.ui.theme.LocalCustomColors
 import kotlinx.coroutines.launch
 
-private val Tabs = listOf("PHOTOS", "ALBUMS", "SEARCH")
+private val Tabs = listOf("PHOTOS", "VIDEOS", "ALBUMS", "SEARCH")
+private const val TAB_PHOTOS = 0
+private const val TAB_VIDEOS = 1
+private const val TAB_ALBUMS = 2
 
 /** Space the tab pages leave at the top so content starts under the overlaid header. */
 val LocalHeaderPadding = staticCompositionLocalOf<Dp> { 0.dp }
@@ -92,9 +95,10 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
                 beyondViewportPageCount = 1,
             ) { page ->
                 when (page) {
-                    0 -> PhotosScreen(viewModel, navController)
-                    1 -> AlbumsScreen(viewModel, navController)
-                    else -> SearchPlaceholder()
+                    TAB_PHOTOS -> PhotosScreen(viewModel, navController)
+                    TAB_VIDEOS -> VideosScreen(viewModel, navController)
+                    TAB_ALBUMS -> AlbumsScreen(viewModel, navController)
+                    else -> SearchScreen(viewModel, navController)
                 }
             }
         }
@@ -128,7 +132,7 @@ private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavControll
             shadowElevation = 16.dp,
             modifier = Modifier.width(200.dp).shadow(16.dp, shape).clip(shape),
         ) {
-            if (tab == 0) {
+            if (tab == TAB_PHOTOS || tab == TAB_VIDEOS) {
                 val newest = settings.sortOrder == SortOrder.DESCENDING
                 MenuEntry(
                     icon = if (newest) R.drawable.order1 else R.drawable.order2,
@@ -139,7 +143,7 @@ private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavControll
                     expanded = false
                 }
             }
-            if (tab == 1 && settings.pinnedAlbums.isNotEmpty()) {
+            if (tab == TAB_ALBUMS && settings.pinnedAlbums.isNotEmpty()) {
                 MenuEntry(R.drawable.pinfill, "CLEAR PINS") { viewModel.settingsRepo.clearPinned(); expanded = false }
             }
             MenuEntry(R.drawable.fav123, "FAVORITES") { expanded = false; navController.navigate(Routes.FAVORITES) }
@@ -167,19 +171,4 @@ private fun MenuEntry(icon: Int, title: String, subtitle: String? = null, onClic
         onClick = onClick,
         modifier = Modifier.padding(vertical = 4.dp),
     )
-}
-
-@Composable
-private fun SearchPlaceholder() {
-    Box(Modifier.fillMaxSize().padding(top = LocalHeaderPadding.current), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("SEARCH", fontFamily = CqMono, fontSize = 22.sp, color = MaterialTheme.colorScheme.onBackground)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "AI search and categories arrive in a later phase",
-                color = LocalCustomColors.current.unselectedItem,
-                fontSize = 13.sp,
-            )
-        }
-    }
 }

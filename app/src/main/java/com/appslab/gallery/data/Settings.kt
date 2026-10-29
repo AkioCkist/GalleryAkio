@@ -26,6 +26,20 @@ data class GallerySettings(
     val appProtection: Boolean = false,
     val maxBrightnessViewing: Boolean = false,
     val rememberVideoPosition: Boolean = false,
+    val ai: AiSettings = AiSettings(),
+    val gridStyle: GridStyle = GridStyle.NOTHING,
+    val gridSpacing: GridSpacing = GridSpacing.AUTO,
+    val showDateHeaders: Boolean = true,
+    val showVideoDuration: Boolean = true,
+    val pinchToZoom: Boolean = true,
+)
+
+/** On-device AI search. Each part can be switched off to save battery and time. */
+data class AiSettings(
+    val enabled: Boolean = true,
+    val faces: Boolean = true,
+    val text: Boolean = true,
+    val onlyWhileCharging: Boolean = false,
 )
 
 /**
@@ -62,7 +76,31 @@ class SettingsRepository(context: Context) {
         appProtection = prefs.getBoolean(KEY_APP_PROTECTION, false),
         maxBrightnessViewing = prefs.getBoolean(KEY_MAX_BRIGHTNESS, false),
         rememberVideoPosition = prefs.getBoolean(KEY_REMEMBER_VIDEO_POSITION, false),
+        ai = AiSettings(
+            enabled = prefs.getBoolean(KEY_AI_ENABLED, true),
+            faces = prefs.getBoolean(KEY_AI_FACES, true),
+            text = prefs.getBoolean(KEY_AI_TEXT, true),
+            onlyWhileCharging = prefs.getBoolean(KEY_AI_CHARGING, false),
+        ),
+        gridStyle = runCatching { GridStyle.valueOf(prefs.getString(KEY_GRID_STYLE, null)!!) }.getOrDefault(GridStyle.NOTHING),
+        gridSpacing = runCatching { GridSpacing.valueOf(prefs.getString(KEY_GRID_SPACING, null)!!) }.getOrDefault(GridSpacing.AUTO),
+        showDateHeaders = prefs.getBoolean(KEY_DATE_HEADERS, true),
+        showVideoDuration = prefs.getBoolean(KEY_VIDEO_DURATION, true),
+        pinchToZoom = prefs.getBoolean(KEY_PINCH_ZOOM, true),
     )
+
+    fun setGridStyle(style: GridStyle) = change({ it.copy(gridStyle = style) }) { putString(KEY_GRID_STYLE, style.name) }
+    fun setGridSpacing(spacing: GridSpacing) = change({ it.copy(gridSpacing = spacing) }) { putString(KEY_GRID_SPACING, spacing.name) }
+    fun setShowDateHeaders(on: Boolean) = change({ it.copy(showDateHeaders = on) }) { putBoolean(KEY_DATE_HEADERS, on) }
+    fun setShowVideoDuration(on: Boolean) = change({ it.copy(showVideoDuration = on) }) { putBoolean(KEY_VIDEO_DURATION, on) }
+    fun setPinchToZoom(on: Boolean) = change({ it.copy(pinchToZoom = on) }) { putBoolean(KEY_PINCH_ZOOM, on) }
+
+    fun setAi(ai: AiSettings) = change({ it.copy(ai = ai) }) {
+        putBoolean(KEY_AI_ENABLED, ai.enabled)
+        putBoolean(KEY_AI_FACES, ai.faces)
+        putBoolean(KEY_AI_TEXT, ai.text)
+        putBoolean(KEY_AI_CHARGING, ai.onlyWhileCharging)
+    }
 
     private inline fun change(transform: (GallerySettings) -> GallerySettings, crossinline write: SharedPreferences.Editor.(GallerySettings) -> Unit) {
         _settings.update(transform)
@@ -124,5 +162,14 @@ class SettingsRepository(context: Context) {
         private const val KEY_APP_PROTECTION = "app_protection"
         private const val KEY_MAX_BRIGHTNESS = "max_brightness_viewing"
         private const val KEY_REMEMBER_VIDEO_POSITION = "remember_video_position"
+        private const val KEY_GRID_STYLE = "grid_style"
+        private const val KEY_GRID_SPACING = "grid_spacing"
+        private const val KEY_DATE_HEADERS = "show_date_headers"
+        private const val KEY_VIDEO_DURATION = "show_video_duration"
+        private const val KEY_PINCH_ZOOM = "pinch_to_zoom"
+        private const val KEY_AI_ENABLED = "ai_enabled"
+        private const val KEY_AI_FACES = "ai_faces"
+        private const val KEY_AI_TEXT = "ai_text"
+        private const val KEY_AI_CHARGING = "ai_only_charging"
     }
 }

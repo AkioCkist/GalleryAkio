@@ -83,6 +83,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         return library.value.all.filter { it.id in ids }
     }
 
+    /** List the photo viewer pages through for [MediaSource.Custom] (search results, categories). */
+    var customList: List<MediaItem> = emptyList()
+
     fun reshuffle() {
         randomSeed.value = Random.nextLong()
     }

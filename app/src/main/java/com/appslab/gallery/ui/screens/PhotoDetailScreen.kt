@@ -92,6 +92,8 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
         when (source) {
             MediaSource.All -> library.visible
             MediaSource.Favorites -> viewModel.favorites()
+            MediaSource.Videos -> library.visible.filter { it.isVideo }
+            MediaSource.Custom -> library.all.associateBy { it.id }.let { byId -> viewModel.customList.mapNotNull { byId[it.id] } }
             is MediaSource.Album -> viewModel.albumItems(source.relativePath, settings.albumSortOrder)
         }
     }

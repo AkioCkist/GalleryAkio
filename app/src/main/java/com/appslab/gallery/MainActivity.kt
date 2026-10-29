@@ -42,7 +42,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.CompositionLocalProvider
 import com.appslab.gallery.ui.GalleryNavHost
+import com.appslab.gallery.ui.components.GridLayout
+import com.appslab.gallery.ui.components.LocalGridLayout
 import com.appslab.gallery.ui.GalleryViewModel
 import com.appslab.gallery.ui.theme.CqMono
 import com.appslab.gallery.ui.theme.GalleryTheme
@@ -65,8 +68,20 @@ class MainActivity : ComponentActivity() {
                     window.decorView.setBackgroundColor(background.toArgb())
                     onDispose { }
                 }
-                PermissionGate(onGranted = viewModel::start) {
-                    GalleryNavHost(viewModel)
+                val gridLayout = remember(settings.gridStyle, settings.gridSpacing, settings.showDateHeaders, settings.showVideoDuration, settings.pinchToZoom) {
+                    GridLayout(
+                        style = settings.gridStyle,
+                        spacing = settings.gridSpacing.resolve(settings.gridStyle),
+                        showDateHeaders = settings.showDateHeaders,
+                        showVideoDuration = settings.showVideoDuration,
+                        pinchToZoom = settings.pinchToZoom,
+                        onColumnsChange = viewModel.settingsRepo::setGridColumns,
+                    )
+                }
+                CompositionLocalProvider(LocalGridLayout provides gridLayout) {
+                    PermissionGate(onGranted = viewModel::start) {
+                        GalleryNavHost(viewModel)
+                    }
                 }
             }
         }

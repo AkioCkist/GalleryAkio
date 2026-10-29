@@ -23,17 +23,24 @@ import com.appslab.gallery.ui.screens.TrashScreen
 sealed interface MediaSource {
     data object All : MediaSource
     data object Favorites : MediaSource
+    data object Videos : MediaSource
+    /** Search results or a category: the list set in [GalleryViewModel.customList]. */
+    data object Custom : MediaSource
     data class Album(val relativePath: String) : MediaSource
 
     fun encode(): String = when (this) {
         All -> "all"
         Favorites -> "favorites"
+        Videos -> "videos"
+        Custom -> "custom"
         is Album -> "album:$relativePath"
     }
 
     companion object {
         fun decode(s: String): MediaSource = when {
             s == "favorites" -> Favorites
+            s == "custom" -> Custom
+            s == "videos" -> Videos
             s.startsWith("album:") -> Album(s.removePrefix("album:"))
             else -> All
         }

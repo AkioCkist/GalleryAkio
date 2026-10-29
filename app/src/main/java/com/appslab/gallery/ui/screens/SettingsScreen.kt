@@ -62,7 +62,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.SingletonImageLoader
 import com.appslab.gallery.BuildConfig
 import com.appslab.gallery.R
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import com.appslab.gallery.data.DateFormatOption
+import com.appslab.gallery.data.GridSpacing
+import com.appslab.gallery.data.GridStyle
 import com.appslab.gallery.data.MediaFilterType
 import com.appslab.gallery.data.SortOption
 import com.appslab.gallery.ui.GalleryViewModel
@@ -108,6 +115,46 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
             }
             item { ThemePicker(selected = s.theme, dark = s.darkMode, onSelect = repo::setTheme) }
 
+            item { SectionHeader("LAYOUT") }
+            item { LayoutPicker(selected = s.gridStyle, dark = s.darkMode, onSelect = repo::setGridStyle) }
+            item {
+                Surface(color = LocalCustomColors.current.cardBackground, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(vertical = 14.dp)) {
+                        Text("Spacing · ${s.gridSpacing.resolve(s.gridStyle)} dp", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                        Spacer(Modifier.height(10.dp))
+                        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(GridSpacing.entries) { sp ->
+                                FilterChip(
+                                    selected = sp == s.gridSpacing,
+                                    onClick = { repo.setGridSpacing(sp) },
+                                    label = { Text(sp.label, fontFamily = CqMono) },
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = Color.White,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                SettingCard(painterResource(R.drawable.date), "Date headers", "Group photos under TODAY, YESTERDAY and dates") {
+                    Switch(checked = s.showDateHeaders, onCheckedChange = repo::setShowDateHeaders)
+                }
+            }
+            item {
+                SettingCard(painterResource(R.drawable.video1), "Video duration", "Show length on video tiles") {
+                    Switch(checked = s.showVideoDuration, onCheckedChange = repo::setShowVideoDuration)
+                }
+            }
+            item {
+                SettingCard(painterResource(R.drawable.ratio), "Pinch to zoom grid", "Pinch the grid to change the number of columns") {
+                    Switch(checked = s.pinchToZoom, onCheckedChange = repo::setPinchToZoom)
+                }
+            }
+
             item { SectionHeader("GALLERY") }
             item {
                 SettingCard(painterResource(R.drawable.adds), "Grid size", "${s.gridColumns} columns", onClick = { dialog = SettingsDialog.GRID })
@@ -136,6 +183,42 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                 SettingCard(painterResource(R.drawable.video1), "Remember video position", "Resume videos where you left off") {
                     Switch(checked = s.rememberVideoPosition, onCheckedChange = repo::setRememberVideoPosition)
                 }
+            }
+
+            item { SectionHeader("AI SEARCH") }
+            item {
+                SettingCard(
+                    painterResource(R.drawable.vault1), "AI search",
+                    if (s.ai.enabled) "Find photos by content, faces and text, on-device" else "Off · search by file name only",
+                ) {
+                    Switch(checked = s.ai.enabled, onCheckedChange = { repo.setAi(s.ai.copy(enabled = it)) })
+                }
+            }
+            if (s.ai.enabled) {
+                item {
+                    SettingCard(painterResource(R.drawable.people__1_), "Face detection", "People view and face filters") {
+                        Switch(checked = s.ai.faces, onCheckedChange = { repo.setAi(s.ai.copy(faces = it)) })
+                    }
+                }
+                item {
+                    SettingCard(painterResource(R.drawable.doc), "Text in photos (OCR)", "Search words in screenshots and documents · slowest part") {
+                        Switch(checked = s.ai.text, onCheckedChange = { repo.setAi(s.ai.copy(text = it)) })
+                    }
+                }
+                item {
+                    SettingCard(painterResource(R.drawable.bright), "Only while charging", "Analyse new photos only when plugged in") {
+                        Switch(checked = s.ai.onlyWhileCharging, onCheckedChange = { repo.setAi(s.ai.copy(onlyWhileCharging = it)) })
+                    }
+                }
+            }
+            item {
+                val indexer = (context.applicationContext as com.appslab.gallery.GalleryApplication).mediaIndexer
+                SettingCard(painterResource(R.drawable.del123), "Clear AI data", "Delete the search index · re-analyses if AI search is on", onClick = {
+                    scope.launch {
+                        indexer.clear()
+                        Toast.makeText(context, "AI data cleared", Toast.LENGTH_SHORT).show()
+                    }
+                })
             }
 
             item { SectionHeader("STORAGE") }
@@ -274,6 +357,93 @@ private fun ThemePicker(selected: AppTheme, dark: Boolean, onSelect: (AppTheme) 
                     ) {
                         if (isSelected) Icon(Icons.Filled.Check, null, tint = Color.White)
                     }
+                }
+            }
+        }
+    }
+}
+
+/** Horizontal strip of layout cards, each with a miniature drawing of the style. */
+@Composable
+private fun LayoutPicker(selected: GridStyle, dark: Boolean, onSelect: (GridStyle) -> Unit) {
+    Surface(color = LocalCustomColors.current.cardBackground, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(vertical = 14.dp)) {
+            Text("Grid style · ${selected.label}", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp))
+            Text(selected.description, fontSize = 12.sp, color = LocalCustomColors.current.unselectedItem, modifier = Modifier.padding(horizontal = 16.dp))
+            Spacer(Modifier.height(12.dp))
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(GridStyle.entries) { style ->
+                    val isSelected = style == selected
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable { onSelect(style) }.padding(4.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .size(width = 84.dp, height = 112.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (dark) Color(0xFF121212) else Color(0xFFFAFAFA))
+                                .border(
+                                    BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else LocalCustomColors.current.divider),
+                                    RoundedCornerShape(12.dp),
+                                )
+                                .padding(6.dp),
+                        ) {
+                            StylePreview(style, dark)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            style.label.uppercase(), fontFamily = CqMono, fontSize = 12.sp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StylePreview(style: GridStyle, dark: Boolean) {
+    val tile = if (dark) Color(0xFF5A5A5A) else Color(0xFFB0B0B0)
+    val border = if (dark) Color(0xFF9A9A9A) else Color(0xFF707070)
+    val gap = (style.defaultSpacing / 2f).coerceAtLeast(1f).dp
+    val shape = RoundedCornerShape((style.cornerRadius / 4f).dp)
+    @Composable
+    fun Tile(modifier: Modifier) = Box(
+        modifier.clip(shape).background(tile).let { if (style.border) it.border(0.5.dp, border, shape) else it },
+    )
+    when (style) {
+        GridStyle.LIST -> Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            repeat(5) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Tile(Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Box(Modifier.size(40.dp, 3.dp).background(tile))
+                        Box(Modifier.size(26.dp, 3.dp).background(tile.copy(alpha = 0.6f)))
+                    }
+                }
+            }
+        }
+        GridStyle.MASONRY -> Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            listOf(listOf(30, 18, 26, 22), listOf(20, 32, 16, 30)).forEach { col ->
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
+                    col.forEach { h -> Tile(Modifier.fillMaxWidth().height(h.dp)) }
+                }
+            }
+        }
+        GridStyle.MOSAIC -> Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            listOf(listOf(1.5f, 0.8f), listOf(0.7f, 0.7f, 1.2f), listOf(1f, 1.6f), listOf(0.8f, 1.3f, 0.7f)).forEach { row ->
+                Row(Modifier.fillMaxWidth().height(22.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    row.forEach { w -> Tile(Modifier.weight(w).fillMaxHeight()) }
+                }
+            }
+        }
+        else -> Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            repeat(4) {
+                Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    repeat(3) { Tile(Modifier.weight(1f).aspectRatio(1f)) }
                 }
             }
         }

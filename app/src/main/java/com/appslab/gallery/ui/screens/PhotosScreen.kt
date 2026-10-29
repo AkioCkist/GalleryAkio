@@ -76,6 +76,40 @@ fun PhotosScreen(viewModel: GalleryViewModel, navController: NavController) {
     }
 }
 
+/** Same grid as Photos, videos only, with a duration badge on each tile. */
+@Composable
+fun VideosScreen(viewModel: GalleryViewModel, navController: NavController) {
+    val library by viewModel.library.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val selection = remember { SelectionState() }
+    val videos = remember(library.visible) { library.visible.filter { it.isVideo } }
+
+    when {
+        library.isLoading -> CenteredMessage(loading = true, title = "Loading...", modifier = Modifier.padding(top = LocalHeaderPadding.current))
+        videos.isEmpty() -> CenteredMessage(
+            title = "No videos found",
+            subtitle = "Videos you record or download will appear here.",
+            modifier = Modifier.padding(top = LocalHeaderPadding.current),
+        )
+        else -> Box(Modifier.fillMaxSize()) {
+            val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + LocalHeaderPadding.current
+            MediaGrid(
+                items = videos,
+                columns = settings.gridColumns,
+                showDateHeaders = true,
+                dateFormat = settings.dateFormat,
+                selection = selection,
+                onOpen = { navController.navigate(Routes.photo(it.id, MediaSource.Videos)) },
+                modifier = Modifier.fillMaxSize(),
+                favoriteIds = settings.favoriteIds,
+                darkMode = settings.darkMode,
+                contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = top, bottom = 100.dp),
+            )
+            SelectionActions(viewModel, selection, videos, modifier = Modifier.align(Alignment.BottomCenter))
+        }
+    }
+}
+
 /** Selection bar plus trash confirmation, shared by Photos, album and favorites grids. */
 @Composable
 fun SelectionActions(
