@@ -1,35 +1,44 @@
 package com.appslab.gallery.ui.components
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
+import android.graphics.Paint
+import android.graphics.Shader
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.layout
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.BitmapImage
+import coil3.SingletonImageLoader
+import coil3.request.Disposable
+import coil3.request.target
 import com.appslab.gallery.data.GridStyle
 import com.appslab.gallery.data.MediaItem
 import com.appslab.gallery.ui.theme.CqMono
 import kotlin.math.floor
-import kotlin.math.roundToInt
 
 /** Something drawn during a pinch: a photo or a date header. Same list for every column count. */
 internal class MorphNode(val key: String, val item: MediaItem?, val label: String?)
@@ -74,6 +83,8 @@ internal class MorphGeometry(val rects: FloatArray) {
  */
 internal class MorphState(
     val nodes: List<MorphNode>,
+    /** Geometry per column count (index = columns); null slots are filled by [geometryFor] on demand. */
+    private val geometries: Array<MorphGeometry?>,
     private val geometryFor: (Int) -> MorphGeometry,
     val anchor: Int,
     /** Where inside the anchor the fingers were, as a fraction of its height. */
@@ -83,9 +94,8 @@ internal class MorphState(
 ) {
     var level by mutableFloatStateOf(startLevel)
     var fingerY by mutableFloatStateOf(startFingerY)
-    private val cache = HashMap<Int, MorphGeometry>()
 
-    fun geometry(columns: Int): MorphGeometry = cache.getOrPut(columns) { geometryFor(columns) }
+    fun geometry(columns: Int): MorphGeometry = geometries[columns] ?: geometryFor(columns).also { geometries[columns] = it }
 
     /** Scroll offset that keeps the anchor under the fingers in the layout for [columns]. */
     fun scrollFor(columns: Int): Float {
@@ -96,38 +106,56 @@ internal class MorphState(
     val from get() = floor(level).toInt().coerceIn(MIN_COLUMNS, MAX_COLUMNS)
     val to get() = (from + 1).coerceAtMost(MAX_COLUMNS)
     val t get() = (level - from).coerceIn(0f, 1f)
-
-    /** Index range of nodes visible in either layout. Contiguous, because node order never changes. */
-    fun visibleRange(viewportHeight: Float): IntRange {
-        val n = nodes.size
-        if (n == 0) return IntRange.EMPTY
-        var first = Int.MAX_VALUE
-        var last = Int.MIN_VALUE
-        for (c in intArrayOf(from, to)) {
-            val g = geometry(c)
-            val s = scrollFor(c)
-            first = minOf(first, g.firstBelow(s, n))
-            last = maxOf(last, g.lastAbove(s + viewportHeight, n))
-        }
-        return first..last
-    }
-
-    private fun lerp(a: Float, b: Float) = a + (b - a) * t
-
-    fun left(i: Int) = lerp(geometry(from).left(i), geometry(to).left(i))
-    fun top(i: Int) = lerp(geometry(from).top(i) - scrollFor(from), geometry(to).top(i) - scrollFor(to))
-    fun right(i: Int) = lerp(geometry(from).right(i), geometry(to).right(i))
-    fun bottom(i: Int) = lerp(geometry(from).bottom(i) - scrollFor(from), geometry(to).bottom(i) - scrollFor(to))
 }
 
 /**
- * Draws the morphing grid. Positions are read in the layout phase only, so a frame of
- * pinching re-places the visible tiles without recomposing them.
+ * Bitmaps, shaders and header text for one pinch, resolved once per node and kept until the
+ * pinch ends, so a frame does no cache lookups or allocations for tiles it has drawn before.
+ */
+private class MorphTiles(private val context: Context, private val bucket: Int) {
+    class Image(bitmap: Bitmap) {
+        val width = bitmap.width.toFloat()
+        val height = bitmap.height.toFloat()
+        val shader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+    }
+
+    private val loader = SingletonImageLoader.get(context)
+    private val images = HashMap<Int, Image>()
+    private val requests = HashMap<Int, Disposable>()
+    val headers = HashMap<Int, TextLayoutResult>()
+    /** Bumped when a thumbnail that wasn't in memory arrives, to redraw. */
+    var loaded by mutableIntStateOf(0)
+    var drawn = false
+
+    fun image(i: Int, item: MediaItem): Image? {
+        images[i]?.let { return it }
+        if (i in requests) return null
+        val cached = loader.memoryCache?.let { cachedThumbnail(it, item.id, bucket) }
+        if (cached != null) return Image(cached).also { images[i] = it }
+        // Not decoded at any size yet (a tile scrolled in by zooming out): fetch it in the background.
+        requests[i] = loader.enqueue(
+            thumbnailRequest(context, item, bucket)
+                .target(onSuccess = { image ->
+                    (image as? BitmapImage)?.bitmap?.let {
+                        images[i] = Image(it)
+                        loaded++
+                    }
+                })
+                .build(),
+        )
+        return null
+    }
+
+    fun cancel() = requests.values.forEach { it.dispose() }
+}
+
+/**
+ * Draws the morphing grid in a single draw pass: no composition, measuring or placing per
+ * tile, so a frame of pinching only re-draws bitmaps at their interpolated rects.
  */
 @Composable
 internal fun MorphLayer(
     state: MorphState,
-    viewportHeight: Float,
     style: GridStyle,
     darkMode: Boolean,
     thumbnailPx: Int,
@@ -135,53 +163,92 @@ internal fun MorphLayer(
     /** Called once the layer has drawn a frame, so the real grid can be hidden without a blank flash. */
     onFirstDraw: () -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
     val firstDraw by rememberUpdatedState(onFirstDraw)
-    var notified by remember(state) { mutableStateOf(false) }
-    val range by remember(state, viewportHeight) { derivedStateOf { state.visibleRange(viewportHeight) } }
-    val shape = RoundedCornerShape(style.cornerRadius.dp)
-    val tileColor = if (darkMode) Color(0xFF2A2A2A) else Color(0xFFEEEEEE)
-    val borderColor = if (darkMode) Color(0xFF404040) else Color(0xFFBDBDBD)
-    val headerColor = if (darkMode) Color.White else Color(0xFF212121)
+    val tiles = remember(state) { MorphTiles(context, thumbnailBucket(thumbnailPx)) }
+    DisposableEffect(tiles) { onDispose { tiles.cancel() } }
+    val textMeasurer = rememberTextMeasurer()
+    val headerStyle = TextStyle(
+        color = if (darkMode) Color.White else Color(0xFF212121),
+        fontSize = 20.sp,
+        fontFamily = CqMono,
+        textAlign = TextAlign.Center,
+    )
+    val radius = with(density) { style.cornerRadius.dp.toPx() }
+    val stroke = if (style.border) with(density) { 1.dp.toPx() } else 0f
+    val paints = remember(darkMode, stroke) {
+        Triple(
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = (if (darkMode) Color(0xFF2A2A2A) else Color(0xFFEEEEEE)).toArgb() },
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.style = Paint.Style.STROKE
+                strokeWidth = stroke
+                color = (if (darkMode) Color(0xFF404040) else Color(0xFFBDBDBD)).toArgb()
+            },
+        )
+    }
 
-    Box(
+    Spacer(
         modifier
             .fillMaxSize()
-            .drawWithContent {
-                drawContent()
-                if (!notified) {
-                    notified = true
+            .drawBehind {
+                tiles.loaded
+                val (tilePaint, imagePaint, borderPaint) = paints
+                val nodes = state.nodes
+                val n = nodes.size
+                if (n == 0) return@drawBehind
+                val t = state.t
+                val gA = state.geometry(state.from)
+                val gB = state.geometry(state.to)
+                val sA = state.scrollFor(state.from)
+                val sB = state.scrollFor(state.to)
+                // Nodes visible in either layout; contiguous, because node order never changes.
+                val first = minOf(gA.firstBelow(sA, n), gB.firstBelow(sB, n))
+                val last = maxOf(gA.lastAbove(sA + size.height, n), gB.lastAbove(sB + size.height, n))
+                val canvas = drawContext.canvas.nativeCanvas
+                for (i in first..last) {
+                    val l = gA.left(i) + (gB.left(i) - gA.left(i)) * t
+                    val r = gA.right(i) + (gB.right(i) - gA.right(i)) * t
+                    val top = (gA.top(i) - sA) + ((gB.top(i) - sB) - (gA.top(i) - sA)) * t
+                    val b = (gA.bottom(i) - sA) + ((gB.bottom(i) - sB) - (gA.bottom(i) - sA)) * t
+                    val item = nodes[i].item
+                    if (item == null) {
+                        val text = tiles.headers.getOrPut(i) {
+                            textMeasurer.measure(nodes[i].label.orEmpty(), headerStyle, constraints = Constraints(maxWidth = (r - l).toInt().coerceAtLeast(0)))
+                        }
+                        drawText(text, topLeft = Offset(l + (r - l - text.size.width) / 2, top + (b - top - text.size.height) / 2))
+                        continue
+                    }
+                    val image = tiles.image(i, item)
+                    // Placeholder only where there is no bitmap yet: overdraw is what costs here.
+                    if (image == null) canvas.drawRoundRect(l, top, r, b, radius, radius, tilePaint)
+                    else {
+                        // ContentScale.Crop: fill the rect, centred, keeping the bitmap's aspect.
+                        // Moves the canvas rather than the shader: changing a shader's local
+                        // matrix rebuilds its native shader (and texture) on every frame.
+                        val scale = maxOf((r - l) / image.width, (b - top) / image.height)
+                        val ox = l + (r - l - image.width * scale) / 2
+                        val oy = top + (b - top - image.height * scale) / 2
+                        imagePaint.shader = image.shader
+                        canvas.save()
+                        canvas.translate(ox, oy)
+                        canvas.scale(scale, scale)
+                        canvas.drawRoundRect(
+                            (l - ox) / scale, (top - oy) / scale, (r - ox) / scale, (b - oy) / scale,
+                            radius / scale, radius / scale, imagePaint,
+                        )
+                        canvas.restore()
+                    }
+                    if (stroke > 0f) {
+                        val h = stroke / 2
+                        canvas.drawRoundRect(l + h, top + h, r - h, b - h, radius - h, radius - h, borderPaint)
+                    }
+                }
+                if (!tiles.drawn) {
+                    tiles.drawn = true
                     firstDraw()
                 }
             },
-    ) {
-        for (i in range) {
-            val node = state.nodes[i]
-            key(node.key) {
-                // Report a 0×0 size so the parent never clamps or centres us, then place
-                // the content at its interpolated position.
-                val place = Modifier.layout { measurable, constraints ->
-                    val l = state.left(i)
-                    val t = state.top(i)
-                    val w = (state.right(i) - l).roundToInt().coerceAtLeast(1)
-                    val h = (state.bottom(i) - t).roundToInt().coerceAtLeast(1)
-                    val p = measurable.measure(Constraints.fixed(w, h))
-                    layout(constraints.minWidth, constraints.minHeight) { p.place(l.roundToInt(), t.roundToInt()) }
-                }
-                if (node.item != null) {
-                    Box(
-                        place
-                            .clip(shape)
-                            .background(tileColor)
-                            .let { if (style.border) it.border(1.dp, borderColor, shape) else it },
-                    ) {
-                        MediaThumbnail(node.item, thumbnailPx, Modifier.fillMaxSize())
-                    }
-                } else {
-                    Box(place, contentAlignment = Alignment.Center) {
-                        Text(node.label.orEmpty(), color = headerColor, fontSize = 20.sp, fontFamily = CqMono, textAlign = TextAlign.Center)
-                    }
-                }
-            }
-        }
-    }
+    )
 }

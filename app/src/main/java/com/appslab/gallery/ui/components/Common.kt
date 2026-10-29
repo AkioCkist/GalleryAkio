@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.BitmapImage
 import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
 import coil3.memory.MemoryCache
@@ -84,16 +86,7 @@ fun MediaThumbnail(
         else THUMBNAIL_BUCKETS.sortedBy { abs(it - bucket) }
             .firstOrNull { it != bucket && cache[MemoryCache.Key(thumbnailKey(item.id, it))] != null }
             ?.let { thumbnailKey(item.id, it) }
-        ImageRequest.Builder(context)
-            // MediaStore's cached thumbnails are made for grid sizes; past that, decode the file
-            // so one- and two-column grids stay sharp. Videos always use MediaStore's frame.
-            .data(if (bucket <= 512 || item.isVideo) MediaThumb(item.uri, bucket) else item.uri)
-            .size(Size(bucket, bucket))
-            .memoryCacheKey(thumbnailKey(item.id, bucket))
-            .placeholderMemoryCacheKey(placeholder)
-            // A crossfade per tile means extra frames of work while flinging.
-            .crossfade(false)
-            .build()
+        thumbnailRequest(context, item, bucket).placeholderMemoryCacheKey(placeholder).build()
     }
     Box(modifier.background(LocalCustomColors.current.shimmer)) {
         AsyncImage(
@@ -123,6 +116,27 @@ fun thumbnailBucket(cellSizePx: Int): Int = when {
 }
 
 fun thumbnailKey(id: Long, bucket: Int) = "thumb:$id:$bucket"
+
+/** The grid's thumbnail request for [item] at [bucket]; shared so every caller hits the same cache entry. */
+fun thumbnailRequest(context: Context, item: MediaItem, bucket: Int): ImageRequest.Builder =
+    ImageRequest.Builder(context)
+        // MediaStore's cached thumbnails are made for grid sizes; past that, decode the file
+        // so one- and two-column grids stay sharp. Videos always use MediaStore's frame.
+        .data(if (bucket <= 512 || item.isVideo) MediaThumb(item.uri, bucket) else item.uri)
+        .size(Size(bucket, bucket))
+        .memoryCacheKey(thumbnailKey(item.id, bucket))
+        // A crossfade per tile means extra frames of work while flinging.
+        .crossfade(false)
+
+/** Thumbnail of [id] already in memory: [bucket] if present, else the nearest other size. */
+fun cachedThumbnail(cache: MemoryCache, id: Long, bucket: Int): Bitmap? {
+    cache[MemoryCache.Key(thumbnailKey(id, bucket))]?.let { return (it.image as? BitmapImage)?.bitmap }
+    for (b in THUMBNAIL_BUCKETS.sortedBy { abs(it - bucket) }) {
+        if (b == bucket) continue
+        cache[MemoryCache.Key(thumbnailKey(id, b))]?.let { return (it.image as? BitmapImage)?.bitmap }
+    }
+    return null
+}
 
 /** Largest grid thumbnail of [id] already in memory, for the viewer to show while it decodes. */
 fun cachedThumbnailKey(context: Context, id: Long): String? {

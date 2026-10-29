@@ -12,8 +12,10 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
@@ -232,44 +234,51 @@ private fun morphNodes(groups: List<DayGroup>): List<MorphNode> = buildList {
     }
 }
 
+/** Everything the morph geometry depends on; a pinch can reuse prepared geometry only if this matches. */
+private data class MorphKey(
+    val groups: List<DayGroup>,
+    val style: GridStyle,
+    val widthDp: Float,
+    val spacingDp: Float,
+    val density: Float,
+    val padStartPx: Float,
+    val padTopPx: Float,
+    val headerHeightPx: Float,
+)
+
+/** Nodes and every column count's geometry, built off the main thread before a pinch needs them. */
+private class MorphPrep(val key: MorphKey, val nodes: List<MorphNode>, val geometries: Array<MorphGeometry?>)
+
 /**
  * Where every node sits for [columns], mirroring exactly what the LazyColumn lays out:
- * same rows, same spacing, same padding. All values in px.
+ * same rows, same spacing, same padding. All values in px. Nodes are numbered in
+ * [morphNodes] order (header, then the day's photos), which row building preserves.
  */
-private fun morphGeometry(
-    groups: List<DayGroup>,
-    nodeIndex: Map<String, Int>,
-    style: GridStyle,
-    columns: Int,
-    widthDp: Float,
-    spacingDp: Float,
-    density: Float,
-    padStartPx: Float,
-    padTopPx: Float,
-    headerHeightPx: Float,
-) : MorphGeometry {
-    val rects = FloatArray(nodeIndex.size * 4)
-    val widthPx = widthDp * density
-    val gap = spacingDp * density
-    var y = padTopPx
-    fun put(i: Int, l: Float, t: Float, r: Float, b: Float) {
-        rects[i * 4] = l; rects[i * 4 + 1] = t; rects[i * 4 + 2] = r; rects[i * 4 + 3] = b
+private fun morphGeometry(k: MorphKey, nodeCount: Int, columns: Int): MorphGeometry {
+    val rects = FloatArray(nodeCount * 4)
+    val widthPx = k.widthDp * k.density
+    val gap = k.spacingDp * k.density
+    var y = k.padTopPx
+    var index = 0
+    fun put(l: Float, t: Float, r: Float, b: Float) {
+        val o = index++ * 4
+        rects[o] = l; rects[o + 1] = t; rects[o + 2] = r; rects[o + 3] = b
     }
-    groups.forEach { g ->
+    k.groups.forEach { g ->
         if (g.label.isNotEmpty()) {
-            put(nodeIndex.getValue("h:${g.key}"), padStartPx, y, padStartPx + widthPx, y + headerHeightPx)
-            y += headerHeightPx + gap
+            put(k.padStartPx, y, k.padStartPx + widthPx, y + k.headerHeightPx)
+            y += k.headerHeightPx + gap
         }
-        buildRows(g, style, columns, widthDp, spacingDp).forEach { e ->
+        buildRows(g, k.style, columns, k.widthDp, k.spacingDp).forEach { e ->
             if (e !is Entry.TileRow) return@forEach
             val slots = e.items.size + if (e.filler > 0f) 1 else 0
             val total = e.weights.sum() + e.filler
             val available = widthPx - gap * (slots - 1)
-            val rowHeight = e.height?.let { it.value * density } ?: (available / total)
-            var x = padStartPx
-            e.items.forEachIndexed { i, item ->
+            val rowHeight = e.height?.let { it.value * k.density } ?: (available / total)
+            var x = k.padStartPx
+            for (i in e.items.indices) {
                 val w = available * e.weights[i] / total
-                put(nodeIndex.getValue("m:${item.id}"), x, y, x + w, y + rowHeight)
+                put(x, y, x + w, y + rowHeight)
                 x += w + gap
             }
             y += rowHeight + gap
@@ -347,7 +356,8 @@ private class GroupKey(val items: List<MediaItem>, val showDates: Boolean, val f
 private data class EntryKey(val groups: List<DayGroup>, val style: GridStyle, val columns: Int, val widthDp: Float, val spacing: Int)
 
 private val groupCache = RecentCache<GroupKey, List<DayGroup>>()
-private val entryCache = RecentCache<EntryKey, List<Entry>>()
+// Room for every column count, which a pinch prepares ahead of time.
+private val entryCache = RecentCache<EntryKey, List<Entry>>(capacity = MAX_COLUMNS + 2)
 
 private const val DAY_MS = 24L * 60 * 60 * 1000
 const val MIN_COLUMNS = 1
@@ -533,9 +543,12 @@ fun MediaGrid(
             modifier = mod,
         )
     }
+    /** Measured date-header height, so the morph lines up with the list pixel for pixel. */
+    var headerHeightPx by remember { mutableIntStateOf(0) }
     val header: @Composable (DayGroup) -> Unit = { g ->
         val ids = remember(g) { g.items.map { it.id } }
         DateHeader(
+            modifier = Modifier.onSizeChanged { headerHeightPx = it.height },
             label = g.label,
             darkMode = darkMode,
             selecting = selection.active,
@@ -596,20 +609,44 @@ fun MediaGrid(
         val density = LocalDensity.current
         val padStartPx = with(density) { padding.calculateStartPadding(dir).toPx() }
         val defaultHeaderPx = with(density) { 52.dp.toPx() }
-        morphStarter[0] = start@{ c ->
-            val nodes = morphNodes(groups)
-            if (nodes.isEmpty()) return@start null
-            val nodeIndex = HashMap<String, Int>(nodes.size * 2).apply { nodes.forEachIndexed { i, n -> put(n.key, i) } }
-            val visible = listState.layoutInfo.visibleItemsInfo
-            // Real header height, so the morph lines up with the list pixel for pixel.
-            val headerPx = visible.firstOrNull { (it.key as? String)?.startsWith("h:") == true }?.size?.toFloat() ?: defaultHeaderPx
-            val geometryFor = { cols: Int ->
-                morphGeometry(groups, nodeIndex, style, cols, widthDp, spacing.toFloat(), density.density, padStartPx, topPaddingPx, headerPx)
+        val morphKey = MorphKey(
+            groups, style, widthDp, spacing.toFloat(), density.density, padStartPx, topPaddingPx,
+            if (headerHeightPx > 0) headerHeightPx.toFloat() else defaultHeaderPx,
+        )
+        val morphPrep = remember { arrayOfNulls<MorphPrep>(1) }
+        if (morphs) LaunchedEffect(morphKey) {
+            // Lay out every column count ahead of time, off the main thread, so neither the
+            // start of a pinch nor crossing into a new column count stalls a frame.
+            val (prep, rows) = withContext(Dispatchers.Default) {
+                val nodes = morphNodes(groups)
+                val geometries = Array(MAX_COLUMNS + 1) { c -> if (c < MIN_COLUMNS) null else morphGeometry(morphKey, nodes.size, c) }
+                val rows = (MIN_COLUMNS..MAX_COLUMNS).associateWith { c ->
+                    groups.flatMap { g ->
+                        (if (g.label.isNotEmpty()) listOf<Entry>(Entry.Header(g)) else emptyList()) +
+                            buildRows(g, style, c, widthDp, spacing.toFloat())
+                    }
+                }
+                MorphPrep(morphKey, nodes, geometries) to rows
             }
-            val g0 = geometryFor(liveColumns)
+            morphPrep[0] = prep
+            // The grid's rows for each count too, so the re-layout when a pinch ends is cheaper.
+            rows.forEach { (c, list) ->
+                val key = EntryKey(groups, style, c, widthDp, spacing)
+                entryCache.get({ it.groups === groups && it == key }) { key to list }
+            }
+        }
+        morphStarter[0] = start@{ c ->
+            val prep = morphPrep[0]?.takeIf { it.key == morphKey }
+            val nodes = prep?.nodes ?: morphNodes(groups)
+            if (nodes.isEmpty()) return@start null
+            val geometries = prep?.geometries?.copyOf() ?: arrayOfNulls(MAX_COLUMNS + 1)
+            val geometryFor = { cols: Int -> morphGeometry(morphKey, nodes.size, cols) }
+            val g0 = geometries[liveColumns] ?: geometryFor(liveColumns).also { geometries[liveColumns] = it }
+            val visible = listState.layoutInfo.visibleItemsInfo
             // Current scroll in content px, from any visible row.
             val row = visible.firstOrNull { (it.key as? String)?.startsWith("r:") == true } ?: return@start null
-            val rowNode = nodeIndex["m:${(row.key as String).removePrefix("r:")}"] ?: return@start null
+            val rowId = (row.key as String).removePrefix("r:").toLongOrNull() ?: return@start null
+            val rowNode = nodes.indexOfFirst { it.item?.id == rowId }.takeIf { it >= 0 } ?: return@start null
             val scroll0 = g0.top(rowNode) - row.offset
             // The photo under the fingers (or the nearest one in that row).
             val cy = c.y + scroll0
@@ -630,7 +667,7 @@ fun MediaGrid(
             }
             if (nodes[best].item == null) best = (best + 1).coerceAtMost(nodes.lastIndex)
             val fraction = ((cy - g0.top(best)) / g0.height(best).coerceAtLeast(1f)).coerceIn(0f, 1f)
-            MorphState(nodes, geometryFor, best, fraction, liveColumns.toFloat(), c.y)
+            MorphState(nodes, geometries, geometryFor, best, fraction, liveColumns.toFloat(), c.y)
         }
         // After a pinch re-layout, scroll so the anchored photo sits exactly where the
         // morph left it (anchor.second = its top on screen).
@@ -695,7 +732,6 @@ fun MediaGrid(
             val morphThumbPx = remember(m) { cellPx }
             MorphLayer(
                 state = m,
-                viewportHeight = constraints.maxHeight.toFloat(),
                 style = style,
                 darkMode = darkMode,
                 thumbnailPx = morphThumbPx,
@@ -739,7 +775,12 @@ private fun MediaItemCard(
 
     Box(
         modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .tileBounds(item.id)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = if (TileBounds.hiddenId == item.id) 0f else 1f
+            }
             .clip(shape)
             .background(tileColor)
             .let { if (style.border) it.border(1.dp, borderColor, shape) else it }
@@ -848,9 +889,16 @@ private fun ListItemRow(
 
 /** Port of DateHeaderWithCheckbox: centred dot-matrix date, select-all circle while selecting. */
 @Composable
-private fun DateHeader(label: String, darkMode: Boolean, selecting: Boolean, allSelected: Boolean, onToggleAll: () -> Unit) {
+private fun DateHeader(
+    label: String,
+    darkMode: Boolean,
+    selecting: Boolean,
+    allSelected: Boolean,
+    onToggleAll: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        modifier.fillMaxWidth().padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

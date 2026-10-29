@@ -63,7 +63,6 @@ object Routes {
 }
 
 private const val NAV_MS = 220
-private const val VIEWER_MS = 160
 
 @Composable
 fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController = rememberNavController()) {
@@ -99,14 +98,16 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
                 navArgument("id") { type = NavType.LongType },
                 navArgument("source") { type = NavType.StringType; defaultValue = "all" },
             ),
-            enterTransition = { fadeIn(tween(VIEWER_MS)) },
-            popExitTransition = { fadeOut(tween(VIEWER_MS)) },
+            // The viewer animates itself (growing out of the tapped tile) off this transition.
+            enterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None },
         ) { entry ->
             PhotoDetailScreen(
                 viewModel = viewModel,
                 initialId = entry.arguments?.getLong("id") ?: 0L,
                 source = MediaSource.decode(entry.arguments?.getString("source") ?: "all"),
                 onBack = navController::popBackStack,
+                transition = transition,
             )
         }
     }

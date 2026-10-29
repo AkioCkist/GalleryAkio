@@ -13,6 +13,19 @@ import android.content.Intent
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.Transition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.draw.drawBehind
+import coil3.SingletonImageLoader
+import com.appslab.gallery.ui.components.LocalGridLayout
+import com.appslab.gallery.ui.components.TileBounds
+import com.appslab.gallery.ui.components.ViewerTransitionLayer
+import com.appslab.gallery.ui.components.cachedThumbnail
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -99,7 +112,14 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: MediaSource, onBack: () -> Unit) {
+fun PhotoDetailScreen(
+    viewModel: GalleryViewModel,
+    initialId: Long,
+    source: MediaSource,
+    onBack: () -> Unit,
+    /** The navigation transition entering / leaving this screen, which drives the open and close motion. */
+    transition: Transition<EnterExitState>? = null,
+) {
     val context = LocalContext.current
     val library by viewModel.library.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -137,12 +157,44 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
     val overlayAlpha by animateFloatAsState(if (overlay) 1f else 0f, tween(if (overlay) 150 else 200), label = "overlay_alpha")
     ForcedLandscape(landscape)
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(
+    // Open / close: the photo grows out of its grid tile and shrinks back into the tile of
+    // whichever photo is showing on close. Only progress is animated; everything that reads it
+    // does so while drawing, so the motion never recomposes or re-lays out anything.
+    val tileCornerPx = with(density) { LocalGridLayout.current.style.cornerRadius.dp.toPx() }
+    val progressState = transition?.animateFloat(
+        transitionSpec = { spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = TRANSITION_STIFFNESS) },
+        label = "viewer_open",
+    ) { if (it == EnterExitState.Visible) 1f else 0f }
+    val progress = { progressState?.value ?: 1f }
+    val closing = transition?.targetState == EnterExitState.PostExit
+    val opened = transition == null || transition.currentState == EnterExitState.Visible
+    // The grid's thumbnail is what moves; without one in memory the viewer just fades.
+    val thumb = remember(current.id) { SingletonImageLoader.get(context).memoryCache?.let { cachedThumbnail(it, current.id, 1024) } }
+    // The pager (and for a video, its player) is only built once the photo has finished
+    // growing: composing it mid-motion would cost frames of the motion.
+    var pagerReady by remember { mutableStateOf(transition == null || thumb == null) }
+    var handedOff by remember { mutableStateOf(pagerReady) }
+    LaunchedEffect(opened) {
+        if (!opened) return@LaunchedEffect
+        pagerReady = true
+        // Keep the moving thumbnail on top until the pager has drawn the same picture under it.
+        withFrameNanos {}
+        withFrameNanos {}
+        handedOff = true
+    }
+
+    Box(Modifier.fillMaxSize().drawBehind { drawRect(Color.Black, alpha = progress()) }) {
+        if (pagerReady) HorizontalPager(
             state = pager,
             key = { items[it].id },
             beyondViewportPageCount = 1,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().graphicsLayer {
+                alpha = when {
+                    thumb == null -> progress()
+                    closing -> 0f
+                    else -> 1f
+                }
+            },
         ) { page ->
             val item = items[page]
             val isCurrent = page == pager.currentPage
@@ -159,9 +211,21 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
                 ZoomableImage(item, isCurrentPage = isCurrent, onTap = { overlay = !overlay })
             }
         }
+        val flying = thumb != null && (!handedOff || closing)
+        // The tile the photo flies out of (or back into) stays empty meanwhile.
+        SideEffect { TileBounds.hiddenId = if (flying) current.id else TileBounds.NO_ID }
+        DisposableEffect(Unit) { onDispose { TileBounds.hiddenId = TileBounds.NO_ID } }
+        if (flying) {
+            ViewerTransitionLayer(
+                bitmap = thumb,
+                progress = progress,
+                tile = { TileBounds.find(current.id) },
+                tileCornerPx = tileCornerPx,
+            )
+        }
 
         // Scrims keep the white controls readable on bright photos without boxing them in.
-        FadingOverlay(overlay, { overlayAlpha }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
+        FadingOverlay(overlay, { overlayAlpha * progress() }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
             TopBar(
                 item = current,
                 landscape = landscape,
@@ -172,7 +236,7 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
                 modifier = Modifier.background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
             )
         }
-        FadingOverlay(overlay, { overlayAlpha }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
+        FadingOverlay(overlay, { overlayAlpha * progress() }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
             // Photos fade into the bar. For videos only the action row gets a backing: a scrim
             // over the controls area sat on top of the filmstrip and darkened its frames.
             Column(
@@ -216,6 +280,8 @@ private val dayFormat = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
 private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
 private val VIDEO_CONTROLS_HEIGHT = 120.dp
+/** Open/close spring: critically damped, about a third of a second. */
+private const val TRANSITION_STIFFNESS = 420f
 
 /**
  * Bars that stay composed and only fade. Composing them on every tap (as AnimatedVisibility
