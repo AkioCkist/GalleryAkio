@@ -1,6 +1,7 @@
 package com.appslab.gallery
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -57,6 +58,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Start the MediaStore query now, in parallel with inflating the first frame.
+        if (hasMediaAccess(this)) viewModel.start()
         setContent {
             val settings by viewModel.settings.collectAsStateWithLifecycle()
             GalleryTheme(theme = settings.theme, darkMode = settings.darkMode) {
@@ -91,17 +94,19 @@ private val mediaPermissions: Array<String> =
     if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
     else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 
+private fun hasMediaAccess(context: Context): Boolean {
+    val full = mediaPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+    // Android 14 "selected photos only" still lets the gallery show what the user picked.
+    val partial = Build.VERSION.SDK_INT >= 34 && ContextCompat.checkSelfPermission(
+        context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+    ) == PackageManager.PERMISSION_GRANTED
+    return full || partial
+}
+
 @Composable
 private fun PermissionGate(onGranted: () -> Unit, content: @Composable () -> Unit) {
     val context = LocalContext.current
-    fun hasAccess(): Boolean {
-        val full = mediaPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-        // Android 14 "selected photos only" still lets the gallery show what the user picked.
-        val partial = Build.VERSION.SDK_INT >= 34 && ContextCompat.checkSelfPermission(
-            context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
-        ) == PackageManager.PERMISSION_GRANTED
-        return full || partial
-    }
+    fun hasAccess() = hasMediaAccess(context)
 
     var granted by remember { mutableStateOf(hasAccess()) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {

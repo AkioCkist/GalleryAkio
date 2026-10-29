@@ -11,6 +11,8 @@ import coil3.video.VideoFrameDecoder
 import android.os.Build
 import com.appslab.gallery.data.MediaRepository
 import com.appslab.gallery.data.SettingsRepository
+import com.appslab.gallery.data.ThumbnailFetcher
+import coil3.memory.MemoryCache
 import com.appslab.gallery.data.search.MediaIndexer
 
 class GalleryApplication : Application(), SingletonImageLoader.Factory {
@@ -31,8 +33,12 @@ class GalleryApplication : Application(), SingletonImageLoader.Factory {
         ImageLoader.Builder(context)
             .components {
                 if (Build.VERSION.SDK_INT >= 28) add(AnimatedImageDecoder.Factory()) else add(GifDecoder.Factory())
+                add(ThumbnailFetcher.Factory())
                 add(VideoFrameDecoder.Factory())
             }
+            // A gallery is almost all images: give the memory cache more room than the 20 %
+            // default so scrolling back and returning from the viewer hits memory, not disk.
+            .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.3).build() }
             .crossfade(150)
             .build()
 }

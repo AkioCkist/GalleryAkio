@@ -11,8 +11,11 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -129,14 +132,28 @@ internal fun MorphLayer(
     darkMode: Boolean,
     thumbnailPx: Int,
     modifier: Modifier = Modifier,
+    /** Called once the layer has drawn a frame, so the real grid can be hidden without a blank flash. */
+    onFirstDraw: () -> Unit = {},
 ) {
+    val firstDraw by rememberUpdatedState(onFirstDraw)
+    var notified by remember(state) { mutableStateOf(false) }
     val range by remember(state, viewportHeight) { derivedStateOf { state.visibleRange(viewportHeight) } }
     val shape = RoundedCornerShape(style.cornerRadius.dp)
     val tileColor = if (darkMode) Color(0xFF2A2A2A) else Color(0xFFEEEEEE)
     val borderColor = if (darkMode) Color(0xFF404040) else Color(0xFFBDBDBD)
     val headerColor = if (darkMode) Color.White else Color(0xFF212121)
 
-    Box(modifier.fillMaxSize()) {
+    Box(
+        modifier
+            .fillMaxSize()
+            .drawWithContent {
+                drawContent()
+                if (!notified) {
+                    notified = true
+                    firstDraw()
+                }
+            },
+    ) {
         for (i in range) {
             val node = state.nodes[i]
             key(node.key) {

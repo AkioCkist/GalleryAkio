@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.withIndex
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.random.Random
@@ -81,7 +82,8 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         if (started) return
         started = true
         viewModelScope.launch {
-            media.changes().debounce(300).collect { reload() }
+            // The first load runs at once; only later MediaStore bursts are debounced.
+            media.changes().withIndex().debounce { if (it.index == 0) 0L else 300L }.collect { reload() }
         }
     }
 

@@ -1,6 +1,9 @@
 package com.appslab.gallery.ui
 
 import android.net.Uri
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -59,15 +62,20 @@ object Routes {
     fun photo(id: Long, source: MediaSource) = "photoDetail/$id?source=${Uri.encode(source.encode())}"
 }
 
+private const val NAV_MS = 220
+private const val VIEWER_MS = 160
+
 @Composable
 fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController = rememberNavController()) {
     NavHost(
         navController = navController,
         startDestination = Routes.MAIN,
-        enterTransition = { slideInHorizontally { it / 4 } + fadeIn() },
-        exitTransition = { fadeOut() },
-        popEnterTransition = { fadeIn() },
-        popExitTransition = { slideOutHorizontally { it / 4 } + fadeOut() },
+        // Short tweens rather than the default springs, whose long tail made back feel laggy.
+        enterTransition = { slideInHorizontally(tween(NAV_MS)) { it / 4 } + fadeIn(tween(NAV_MS)) },
+        // The screen under the viewer stays as it is: fading it too only adds work to every frame.
+        exitTransition = { if (targetState.destination.route == Routes.PHOTO) ExitTransition.None else fadeOut(tween(NAV_MS)) },
+        popEnterTransition = { if (initialState.destination.route == Routes.PHOTO) EnterTransition.None else fadeIn(tween(NAV_MS)) },
+        popExitTransition = { slideOutHorizontally(tween(NAV_MS)) { it / 4 } + fadeOut(tween(NAV_MS)) },
     ) {
         composable(Routes.MAIN) {
             MainTabsScreen(viewModel, navController)
@@ -91,8 +99,8 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
                 navArgument("id") { type = NavType.LongType },
                 navArgument("source") { type = NavType.StringType; defaultValue = "all" },
             ),
-            enterTransition = { fadeIn() },
-            popExitTransition = { fadeOut() },
+            enterTransition = { fadeIn(tween(VIEWER_MS)) },
+            popExitTransition = { fadeOut(tween(VIEWER_MS)) },
         ) { entry ->
             PhotoDetailScreen(
                 viewModel = viewModel,

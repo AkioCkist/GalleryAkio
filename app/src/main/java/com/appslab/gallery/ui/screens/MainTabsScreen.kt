@@ -92,7 +92,9 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
             HorizontalPager(
                 state = pager,
                 modifier = Modifier.fillMaxSize().nestedScroll(hideOnScroll),
-                beyondViewportPageCount = 1,
+                // Only the visible tab stays composed: each tab is a full grid, and keeping a
+                // second one alive doubled the work of coming back from the viewer.
+                beyondViewportPageCount = 0,
             ) { page ->
                 when (page) {
                     TAB_PHOTOS -> PhotosScreen(viewModel, navController)

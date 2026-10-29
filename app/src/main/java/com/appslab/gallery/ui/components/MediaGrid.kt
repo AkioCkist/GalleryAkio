@@ -16,6 +16,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.input.pointer.util.VelocityTracker1D
+import kotlin.math.ceil
+import kotlin.math.floor
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -279,24 +284,33 @@ private fun morphGeometry(
  */
 private fun Modifier.pinchGesture(
     enabled: Boolean,
+    /**
+     * Allowed scale, read once [onStart] has run. Clamping the running scale (not just the
+     * result) means reversing direction at 1 or 6 columns responds at once, with no dead zone.
+     */
+    scaleRange: () -> ClosedFloatingPointRange<Float>,
     onStart: (centroid: Offset) -> Unit = {},
-    onZoom: (scale: Float, centroid: Offset) -> Unit,
+    onZoom: (scale: Float, centroid: Offset, timeMillis: Long) -> Unit,
     onEnd: (scale: Float, centroid: Offset) -> Unit,
 ): Modifier =
     if (!enabled) this else pointerInput(Unit) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             var scale = 1f
+            var range = 0f..Float.MAX_VALUE
             var centroid = Offset.Zero
             var pinching = false
             do {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 if (event.changes.count { it.pressed } > 1) {
                     centroid = event.calculateCentroid(useCurrent = true)
-                    if (!pinching) onStart(centroid)
+                    if (!pinching) {
+                        onStart(centroid)
+                        range = scaleRange()
+                    }
                     pinching = true
-                    scale = (scale * event.calculateZoom()).coerceIn(MIN_SCALE, MAX_SCALE)
-                    onZoom(scale, centroid)
+                    scale = (scale * event.calculateZoom()).coerceIn(range)
+                    onZoom(scale, centroid, event.changes.first().uptimeMillis)
                     event.changes.forEach { it.consume() }
                 }
             } while (event.changes.any { it.pressed })
@@ -311,12 +325,37 @@ private fun keyToId(key: Any): Long? = when (key) {
     else -> null
 }
 
+/**
+ * Last few results, kept across compositions. Opening a photo removes the grid from
+ * composition, so without this every return from the viewer regrouped and re-laid out the
+ * whole library on the main thread before the first frame. Keys compare lists by identity.
+ */
+private class RecentCache<K, V>(private val capacity: Int = 4) {
+    private val slots = ArrayDeque<Pair<K, V>>()
+
+    fun get(matches: (K) -> Boolean, compute: () -> Pair<K, V>): V {
+        val hit = slots.firstOrNull { matches(it.first) }
+        if (hit != null) return hit.second
+        val fresh = compute()
+        slots.addFirst(fresh)
+        if (slots.size > capacity) slots.removeLast()
+        return fresh.second
+    }
+}
+
+private class GroupKey(val items: List<MediaItem>, val showDates: Boolean, val format: DateFormatOption)
+private data class EntryKey(val groups: List<DayGroup>, val style: GridStyle, val columns: Int, val widthDp: Float, val spacing: Int)
+
+private val groupCache = RecentCache<GroupKey, List<DayGroup>>()
+private val entryCache = RecentCache<EntryKey, List<Entry>>()
+
 private const val DAY_MS = 24L * 60 * 60 * 1000
-private const val MIN_SCALE = 0.15f
-private const val MAX_SCALE = 6f
 const val MIN_COLUMNS = 1
-/** Practical ceiling: past this, tiles are a few pixels wide. */
-const val MAX_COLUMNS = 30
+const val MAX_COLUMNS = 6
+/** How far ahead (seconds) the release velocity is projected when choosing the column count. */
+private const val FLING_PROJECTION = 0.12f
+/** Columns per second; caps a wild flick so the settle never races past the next layout. */
+private const val MAX_LEVEL_VELOCITY = 8f
 
 @Composable
 fun MediaGrid(
@@ -341,7 +380,11 @@ fun MediaGrid(
         start = 0.dp, end = 0.dp,
         top = contentPadding.calculateTopPadding(), bottom = contentPadding.calculateBottomPadding(),
     ) else contentPadding
-    val groups = remember(items, showDates, dateFormat) { groupByDay(items, showDates, dateFormat) }
+    val groups = remember(items, showDates, dateFormat) {
+        groupCache.get({ it.items === items && it.showDates == showDates && it.format == dateFormat }) {
+            GroupKey(items, showDates, dateFormat) to groupByDay(items, showDates, dateFormat)
+        }
+    }
     val onColumns by rememberUpdatedState(layout.onColumnsChange)
     var liveColumns by remember(columns) { mutableIntStateOf(columns) }
     val currentColumns by rememberUpdatedState(liveColumns)
@@ -373,49 +416,81 @@ fun MediaGrid(
     // columns flow independently, falls back to scaling the grid on the GPU.
     val morphs = style != GridStyle.MASONRY && style != GridStyle.LIST
     var morph by remember { mutableStateOf<MorphState?>(null) }
+    /** True once the morph layer has drawn; until then the real grid stays visible. */
+    var morphDrawn by remember { mutableStateOf(false) }
     /** Builds a MorphState from the current layout; set inside BoxWithConstraints, where sizes are known. */
     val morphStarter = remember { arrayOfNulls<(Offset) -> MorphState?>(1) }
-    var morphStartColumns by remember { mutableIntStateOf(columns) }
+    /** Morph driven by the gesture in progress; null when this pinch doesn't own one. */
+    val activeMorph = remember { arrayOfNulls<MorphState>(1) }
+    var pinchStartColumns by remember { mutableIntStateOf(columns) }
+    /** Column count the fingers are nearest to, for one haptic tick per step. */
+    var lastTick by remember { mutableIntStateOf(columns) }
+    val levelVelocity = remember { VelocityTracker1D(isDataDifferential = false) }
+    val haptics = LocalHapticFeedback.current
 
     val gridModifier = modifier
         .testTag("media_grid")
         .onSizeChanged { gridSize = it }
         .pinchGesture(
             enabled = layout.pinchToZoom && style != GridStyle.LIST,
+            scaleRange = { pinchStartColumns.toFloat() / MAX_COLUMNS..pinchStartColumns.toFloat() / MIN_COLUMNS },
             onStart = { c ->
-                if (morphs && morph == null) {
-                    morphStartColumns = currentColumns
-                    morph = morphStarter[0]?.invoke(c)
-                }
+                pinchStartColumns = currentColumns
+                lastTick = currentColumns
+                levelVelocity.resetTracking()
+                // A pinch that lands while the previous one is still settling is ignored,
+                // rather than yanking the photos to a new anchor mid-glide.
+                activeMorph[0] = if (morphs && morph == null) morphStarter[0]?.invoke(c)?.also { morph = it } else null
             },
-            onZoom = { scale, c ->
-                val m = morph
+            onZoom = { scale, c, time ->
+                // Spreading (scale > 1) means bigger photos, i.e. fewer columns.
+                val level = pinchStartColumns / scale
+                val nearest = level.roundToInt()
+                if (nearest != lastTick) {
+                    lastTick = nearest
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+                val m = activeMorph[0]
                 if (m != null) {
-                    // Spreading (scale > 1) means bigger photos, i.e. fewer columns.
-                    m.level = (morphStartColumns / scale).coerceIn(MIN_COLUMNS.toFloat(), MAX_COLUMNS.toFloat())
+                    m.level = level
                     m.fingerY = c.y
+                    levelVelocity.addDataPoint(time, level)
                 } else if (!morphs) {
                     if (gridSize.width > 0) origin = TransformOrigin(c.x / gridSize.width, c.y / gridSize.height)
                     scope.launch { zoom.snapTo(scale) }
                 }
             },
             onEnd = { scale, c ->
-                val m = morph
+                val m = activeMorph[0]
+                activeMorph[0] = null
                 if (m != null) {
+                    // Carry the fingers' speed into the settle, so lifting them doesn't stop
+                    // the motion dead before it starts again.
+                    val velocity = levelVelocity.calculateVelocity().coerceIn(-MAX_LEVEL_VELOCITY, MAX_LEVEL_VELOCITY)
+                    val lo = floor(m.level).toInt().coerceAtLeast(MIN_COLUMNS)
+                    val hi = ceil(m.level).toInt().coerceAtMost(MAX_COLUMNS)
+                    // A quick flick finishes the step it is heading for; never skips one.
+                    val target = (m.level + velocity * FLING_PROJECTION).roundToInt().coerceIn(lo, hi)
                     scope.launch {
-                        val target = m.level.roundToInt().coerceIn(MIN_COLUMNS, MAX_COLUMNS)
-                        // Glide the remaining distance to the nearest whole column count.
-                        Animatable(m.level).animateTo(target.toFloat(), spring(dampingRatio = 0.9f, stiffness = 600f)) { m.level = value }
-                        if (target != morphStartColumns) {
+                        Animatable(m.level).animateTo(
+                            target.toFloat(),
+                            spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+                            initialVelocity = velocity,
+                        ) { m.level = value.coerceIn(lo.toFloat(), hi.toFloat()) }
+                        if (target != currentColumns) {
                             val g = m.geometry(target)
                             val id = m.nodes[m.anchor].item?.id
                             anchor = id?.let { it to (g.top(m.anchor) - m.scrollFor(target)) }
                             liveColumns = target
                             onColumns(target)
-                            // Keep the morph on screen until the real grid has scrolled into place.
+                            // Keep the morph on screen until the real grid has scrolled into place
+                            // and drawn a frame, so the swap is invisible.
                             snapshotFlow { anchor }.first { it == null }
+                            withFrameNanos {}
+                            withFrameNanos {}
                         }
                         morph = null
+                        morphDrawn = false
                     }
                     return@pinchGesture
                 }
@@ -510,9 +585,12 @@ fun MediaGrid(
     BoxWithConstraints(gridModifier) {
         val widthDp = maxWidth.value - padding.calculateStartPadding(dir).value - padding.calculateEndPadding(dir).value
         val entries = remember(groups, style, liveColumns, widthDp, spacing) {
-            groups.flatMap { g ->
-                (if (g.label.isNotEmpty()) listOf<Entry>(Entry.Header(g)) else emptyList()) +
-                    buildRows(g, style, liveColumns, widthDp, spacing.toFloat())
+            val key = EntryKey(groups, style, liveColumns, widthDp, spacing)
+            entryCache.get({ it.groups === groups && it == key }) {
+                key to groups.flatMap { g ->
+                    (if (g.label.isNotEmpty()) listOf<Entry>(Entry.Header(g)) else emptyList()) +
+                        buildRows(g, style, liveColumns, widthDp, spacing.toFloat())
+                }
             }
         }
         val density = LocalDensity.current
@@ -578,7 +656,7 @@ fun MediaGrid(
                 .fillMaxSize()
                 .then(zoomLayer)
                 // Hidden (but still laid out) while the morph layer stands in for it.
-                .graphicsLayer { alpha = if (morph != null) 0f else 1f },
+                .graphicsLayer { alpha = if (morph != null && morphDrawn) 0f else 1f },
             contentPadding = padding,
             verticalArrangement = Arrangement.spacedBy(if (style == GridStyle.LIST) 2.dp else spacing.dp),
         ) {
@@ -612,12 +690,16 @@ fun MediaGrid(
             }
         }
         morph?.let { m ->
+            // Frozen for the whole pinch: the column count changes under the morph at the end,
+            // and re-requesting every thumbnail then would blank the tiles for a frame.
+            val morphThumbPx = remember(m) { cellPx }
             MorphLayer(
                 state = m,
                 viewportHeight = constraints.maxHeight.toFloat(),
                 style = style,
                 darkMode = darkMode,
-                thumbnailPx = cellPx,
+                thumbnailPx = morphThumbPx,
+                onFirstDraw = { morphDrawn = true },
             )
         }
     }

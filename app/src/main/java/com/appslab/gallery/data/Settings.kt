@@ -56,7 +56,7 @@ class SettingsRepository(context: Context) {
         theme = runCatching { AppTheme.valueOf(prefs.getString(KEY_THEME, null) ?: "DEFAULT") }
             .getOrDefault(AppTheme.DEFAULT),
         darkMode = prefs.getBoolean(KEY_DARK_MODE, true),
-        gridColumns = prefs.getInt(KEY_GRID_COLUMNS, 3).coerceIn(1, 30),
+        gridColumns = prefs.getInt(KEY_GRID_COLUMNS, 3).coerceIn(1, 6),
         sortOption = SortOption.fromValue(prefs.getString(KEY_SORT_OPTION, null)),
         sortOrder = prefs.getString(KEY_SORT_ORDER, "descending").toSortOrder(),
         mediaFilters = prefs.getStringSet(KEY_MEDIA_FILTERS, null).orEmpty()
@@ -108,7 +108,7 @@ class SettingsRepository(context: Context) {
     fun setTheme(theme: AppTheme) = change({ it.copy(theme = theme) }) { putString(KEY_THEME, it.theme.name) }
     fun setDarkMode(dark: Boolean) = change({ it.copy(darkMode = dark) }) { putBoolean(KEY_DARK_MODE, it.darkMode) }
     fun setGridColumns(columns: Int) =
-        change({ it.copy(gridColumns = columns.coerceIn(1, 30)) }) { putInt(KEY_GRID_COLUMNS, it.gridColumns) }
+        change({ it.copy(gridColumns = columns.coerceIn(1, 6)) }) { putInt(KEY_GRID_COLUMNS, it.gridColumns) }
     fun setSortOption(option: SortOption) =
         change({ it.copy(sortOption = option) }) { putString(KEY_SORT_OPTION, it.sortOption.value) }
     fun setSortOrder(order: SortOrder) =

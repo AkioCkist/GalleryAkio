@@ -32,11 +32,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
+import coil3.memory.MemoryCache
+import kotlin.math.abs
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Size
 import com.appslab.gallery.data.MediaItem
+import com.appslab.gallery.data.MediaThumb
 import com.appslab.gallery.ui.theme.LocalCustomColors
 import com.appslab.gallery.ui.theme.RobotoNumbers
 import java.util.Locale
@@ -73,10 +77,20 @@ fun MediaThumbnail(
     // reuses the bitmaps already in memory instead of decoding every tile again.
     val bucket = thumbnailBucket(cellSizePx)
     val request = remember(item.uri, bucket) {
+        // While this size decodes, show any other size already in memory, so a tile that
+        // pinching moved into a new bucket never flashes empty.
+        val cache = SingletonImageLoader.get(context).memoryCache
+        val placeholder = if (cache == null || cache[MemoryCache.Key(thumbnailKey(item.id, bucket))] != null) null
+        else THUMBNAIL_BUCKETS.sortedBy { abs(it - bucket) }
+            .firstOrNull { it != bucket && cache[MemoryCache.Key(thumbnailKey(item.id, it))] != null }
+            ?.let { thumbnailKey(item.id, it) }
         ImageRequest.Builder(context)
-            .data(item.uri)
+            // MediaStore's cached thumbnails are made for grid sizes; past that, decode the file
+            // so one- and two-column grids stay sharp. Videos always use MediaStore's frame.
+            .data(if (bucket <= 512 || item.isVideo) MediaThumb(item.uri, bucket) else item.uri)
             .size(Size(bucket, bucket))
             .memoryCacheKey(thumbnailKey(item.id, bucket))
+            .placeholderMemoryCacheKey(placeholder)
             // A crossfade per tile means extra frames of work while flinging.
             .crossfade(false)
             .build()
@@ -100,6 +114,8 @@ fun MediaThumbnail(
     }
 }
 
+private val THUMBNAIL_BUCKETS = intArrayOf(256, 512, 1024)
+
 fun thumbnailBucket(cellSizePx: Int): Int = when {
     cellSizePx <= 256 -> 256
     cellSizePx <= 512 -> 512
@@ -107,6 +123,12 @@ fun thumbnailBucket(cellSizePx: Int): Int = when {
 }
 
 fun thumbnailKey(id: Long, bucket: Int) = "thumb:$id:$bucket"
+
+/** Largest grid thumbnail of [id] already in memory, for the viewer to show while it decodes. */
+fun cachedThumbnailKey(context: Context, id: Long): String? {
+    val cache = SingletonImageLoader.get(context).memoryCache ?: return null
+    return THUMBNAIL_BUCKETS.reversed().map { thumbnailKey(id, it) }.firstOrNull { cache[MemoryCache.Key(it)] != null }
+}
 
 @Composable
 fun rememberCellSizePx(columns: Int, screenWidthDp: Int): Int {

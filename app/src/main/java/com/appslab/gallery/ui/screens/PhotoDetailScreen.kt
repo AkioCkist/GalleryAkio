@@ -10,6 +10,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -116,6 +121,9 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
 
     val trashConsent = rememberConsentLauncher { }
 
+    val density = LocalDensity.current
+    var bottomBarHeight by remember { mutableStateOf(0.dp) }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
             state = pager,
@@ -130,23 +138,37 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
                     item = item,
                     isCurrentPage = isCurrent,
                     rememberPosition = settings.rememberVideoPosition,
-                    onControllerVisibility = { overlay = it },
+                    controlsVisible = overlay,
+                    onControlsChange = { overlay = it },
+                    bottomInset = bottomBarHeight,
                 )
             } else {
                 ZoomableImage(item, isCurrentPage = isCurrent, onTap = { overlay = !overlay })
             }
         }
 
-        AnimatedVisibility(overlay, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+        // Scrims keep the white controls readable on bright photos without boxing them in.
+        AnimatedVisibility(overlay, enter = fadeIn(tween(150)), exit = fadeOut(tween(200)), modifier = Modifier.align(Alignment.TopCenter)) {
+            TopBar(
+                item = current,
+                onBack = onBack,
+                onDetails = { showInfo = true },
+                modifier = Modifier.background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
+            )
+        }
+        AnimatedVisibility(overlay, enter = fadeIn(tween(150)), exit = fadeOut(tween(200)), modifier = Modifier.align(Alignment.BottomCenter)) {
             BottomBar(
                 item = current,
                 isFavorite = current.id in settings.favoriteIds,
-                onBack = onBack,
                 onShare = { shareItems(context, listOf(current)) },
                 onDelete = { confirmTrash = true },
-                onDetails = { showInfo = true },
                 onFavorite = { viewModel.settingsRepo.toggleFavorite(current.id) },
                 onRename = { renaming = true },
+                modifier = Modifier
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
+                    // Extra room on top for the video seek bar, which sits on this bar.
+                    .padding(top = if (current.isVideo) 72.dp else 24.dp)
+                    .onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
             )
         }
     }
@@ -168,32 +190,69 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
     if (renaming) RenameDialog(viewModel, current, onDismiss = { renaming = false })
 }
 
-/** Port of the original viewer bar: BACK, SHARE, DELETE and MORE as icon-over-label buttons. */
+private val dayFormat = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
+private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+/** Back, the capture date and time, and details. */
+@Composable
+private fun TopBar(item: MediaItem, onBack: () -> Unit, onDetails: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+            .padding(bottom = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(painterResource(R.drawable.back2), "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+        }
+        Column(Modifier.weight(1f).padding(start = 4.dp)) {
+            val date = Date(item.dateTaken)
+            Text(
+                dayFormat.format(date).uppercase(Locale.getDefault()),
+                color = Color.White, fontFamily = CqMono, fontSize = 16.sp, maxLines = 1,
+            )
+            Text(
+                "${timeFormat.format(date)}  ·  ${formatSize(item.size)}",
+                color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1,
+            )
+        }
+        IconButton(onClick = onDetails) {
+            Icon(painterResource(R.drawable.info), "Details", tint = Color.White, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+/** Share, favorite, delete and more, as icon-over-label buttons. */
 @Composable
 private fun BottomBar(
     item: MediaItem,
     isFavorite: Boolean,
-    onBack: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
-    onDetails: () -> Unit,
     onFavorite: () -> Unit,
     onRename: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .background(Color.Black.copy(alpha = 0.5f))
             .navigationBarsPadding()
-            .padding(vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BarButton(R.drawable.back2, "BACK", onBack)
-        BarButton(R.drawable.share, "SHARE", onShare)
-        BarButton(R.drawable.delete, "DELETE", onDelete)
+        BarButton(R.drawable.share, "SHARE", onClick = onShare)
+        BarButton(
+            if (isFavorite) R.drawable.fillfav2 else R.drawable.fav123,
+            "FAVORITE",
+            tint = if (isFavorite) Color(0xFFFF4D4D) else Color.White,
+            onClick = onFavorite,
+        )
+        BarButton(R.drawable.delete, "DELETE", onClick = onDelete)
         Box {
             BarButton(R.drawable.more2, "MORE") { menu = true }
             DropdownMenu(
@@ -202,10 +261,6 @@ private fun BottomBar(
                 shape = RoundedCornerShape(16.dp),
                 containerColor = MaterialTheme.colorScheme.surface,
             ) {
-                MoreItem(R.drawable.info, "DETAILS") { menu = false; onDetails() }
-                MoreItem(if (isFavorite) R.drawable.fillfav2 else R.drawable.fav123, if (isFavorite) "UNFAVORITE" else "FAVORITE") {
-                    menu = false; onFavorite()
-                }
                 if (!item.isVideo) {
                     MoreItem(R.drawable.wallpaper, "SET WALLPAPER") {
                         menu = false
@@ -227,13 +282,17 @@ private fun BottomBar(
 }
 
 @Composable
-private fun BarButton(icon: Int, label: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(painterResource(icon), label, tint = Color.White, modifier = Modifier.size(26.dp))
-            Spacer(Modifier.height(5.dp))
-            Text(label, color = Color.White, fontFamily = CqMono, fontSize = 15.sp)
-        }
+private fun BarButton(icon: Int, label: String, tint: Color = Color.White, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(painterResource(icon), label, tint = tint, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(label, color = Color.White.copy(alpha = 0.85f), fontFamily = CqMono, fontSize = 11.sp, letterSpacing = 0.5.sp)
     }
 }
 

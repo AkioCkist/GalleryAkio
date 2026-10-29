@@ -18,8 +18,14 @@ class PinchZoomTest {
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
+    /** The pager keeps neighbouring tabs composed; pick the grid that is actually on screen. */
+    private fun visibleGrid() = rule.onAllNodesWithTag("media_grid").let { all ->
+        val index = all.fetchSemanticsNodes().indexOfFirst { it.boundsInRoot.left in -1f..1f }
+        all[index.coerceAtLeast(0)]
+    }
+
     private fun pinch(spreadFrom: Float, spreadTo: Float, steps: Int = 40) {
-        val grid = rule.onAllNodesWithTag("media_grid")[0]
+        val grid = visibleGrid()
         val cx = 540f
         val cy = 1200f
         grid.performTouchInput {
@@ -44,11 +50,13 @@ class PinchZoomTest {
     fun pinchOutThenIn() {
         rule.waitUntil(20_000) { rule.onAllNodesWithTag("media_grid").fetchSemanticsNodes().isNotEmpty() }
         Thread.sleep(2_000)
-        pinch(spreadFrom = 80f, spreadTo = 420f) // spread: bigger photos, fewer columns
+        pinch(spreadFrom = 150f, spreadTo = 260f) // spread ×1.7: 3 → 2 columns
         Thread.sleep(1_500)
-        pinch(spreadFrom = 420f, spreadTo = 60f) // pinch: smaller photos, more columns
+        pinch(spreadFrom = 300f, spreadTo = 100f) // pinch ×0.33: 2 → 6 columns
         Thread.sleep(1_500)
-        pinch(spreadFrom = 400f, spreadTo = 120f)
+        pinch(spreadFrom = 120f, spreadTo = 240f) // spread ×2: 6 → 3 columns
+        Thread.sleep(1_500)
+        pinch(spreadFrom = 300f, spreadTo = 30f) // pinch ×0.1 from 3: stops at the 6-column limit
         Thread.sleep(1_500)
     }
 }
