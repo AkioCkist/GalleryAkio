@@ -1,0 +1,134 @@
+package com.appslab.gallery.ui.components
+
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.size.Size
+import com.appslab.gallery.data.MediaItem
+import com.appslab.gallery.ui.theme.LocalCustomColors
+import com.appslab.gallery.ui.theme.RobotoNumbers
+import java.util.Locale
+
+fun formatSize(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> String.format(Locale.US, "%.2f GB", bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> String.format(Locale.US, "%.1f MB", bytes / (1L shl 20).toDouble())
+    bytes >= 1L shl 10 -> String.format(Locale.US, "%.0f KB", bytes / (1L shl 10).toDouble())
+    else -> "$bytes B"
+}
+
+fun formatDuration(millis: Long): String {
+    val total = millis / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s) else String.format(Locale.US, "%d:%02d", m, s)
+}
+
+/**
+ * Square grid cell. Requests a thumbnail-sized decode so scrolling a large
+ * library never decodes full-resolution bitmaps.
+ */
+@Composable
+fun MediaThumbnail(
+    item: MediaItem,
+    cellSizePx: Int,
+    modifier: Modifier = Modifier,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+) {
+    val context = LocalContext.current
+    val request = remember(item.uri, cellSizePx) {
+        ImageRequest.Builder(context)
+            .data(item.uri)
+            .size(Size(cellSizePx, cellSizePx))
+            // The photo viewer reuses this key as its placeholder.
+            .memoryCacheKey("thumb:${item.id}")
+            .build()
+    }
+    Box(modifier.background(LocalCustomColors.current.shimmer)) {
+        AsyncImage(
+            model = request,
+            contentDescription = item.displayName,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (selectionMode) {
+            if (selected) Box(Modifier.fillMaxSize().background(Color(0x55000000)))
+            Icon(
+                if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp),
+            )
+        }
+    }
+}
+
+@Composable
+fun rememberCellSizePx(columns: Int, screenWidthDp: Int): Int {
+    val density = LocalDensity.current
+    return remember(columns, screenWidthDp) { with(density) { (screenWidthDp.dp / columns).roundToPx() } }
+}
+
+/** Launches MediaStore consent dialogs and reports whether the user approved. */
+@Composable
+fun rememberConsentLauncher(onResult: (approved: Boolean) -> Unit): (PendingIntent?) -> Unit {
+    val callback = rememberUpdatedState(onResult)
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
+        callback.value(it.resultCode == Activity.RESULT_OK)
+    }
+    return remember(launcher) {
+        { pi ->
+            if (pi == null) callback.value(true)
+            else launcher.launch(IntentSenderRequest.Builder(pi.intentSender).build())
+        }
+    }
+}
+
+fun shareItems(context: Context, items: List<MediaItem>) {
+    if (items.isEmpty()) return
+    val intent = if (items.size == 1) {
+        Intent(Intent.ACTION_SEND).apply {
+            type = items[0].mimeType
+            putExtra(Intent.EXTRA_STREAM, items[0].uri)
+        }
+    } else {
+        Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = if (items.all { it.isVideo }) "video/*" else if (items.none { it.isVideo }) "image/*" else "*/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(items.map { it.uri }))
+        }
+    }
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    context.startActivity(Intent.createChooser(intent, null))
+}
