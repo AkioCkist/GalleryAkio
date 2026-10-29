@@ -1,5 +1,19 @@
 package com.appslab.gallery.ui.components
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -47,6 +61,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -58,8 +73,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -120,16 +137,17 @@ private class DayGroup(val key: String, val label: String, val items: List<Media
 private fun groupByDay(items: List<MediaItem>, showDates: Boolean, format: DateFormatOption): List<DayGroup> {
     if (!showDates) return listOf(DayGroup("all", "", items))
     val formatter = SimpleDateFormat(format.pattern.replace(" HH:mm", ""), Locale.getDefault())
-    val keyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    val today = keyFormat.format(Date())
-    val yesterday = keyFormat.format(Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }.time)
-    return items.groupByTo(LinkedHashMap()) { keyFormat.format(Date(it.dateAdded)) }.map { (key, group) ->
-        val label = when (key) {
+    // Local calendar day as a number: far cheaper than formatting a date string per item.
+    val tz = java.util.TimeZone.getDefault()
+    val dayOf = { millis: Long -> Math.floorDiv(millis + tz.getOffset(millis), DAY_MS) }
+    val today = dayOf(System.currentTimeMillis())
+    return items.groupByTo(LinkedHashMap()) { dayOf(it.dateAdded) }.map { (day, group) ->
+        val label = when (day) {
             today -> "TODAY"
-            yesterday -> "YESTERDAY"
+            today - 1 -> "YESTERDAY"
             else -> formatter.format(Date(group.first().dateAdded))
         }
-        DayGroup(key, label.uppercase(Locale.ROOT), group)
+        DayGroup(day.toString(), label.uppercase(Locale.ROOT), group)
     }
 }
 
@@ -201,31 +219,104 @@ private fun buildRows(group: DayGroup, style: GridStyle, columns: Int, widthDp: 
     return rows
 }
 
-/** Two-finger pinch changes the column count, like Google Photos. Single-finger scrolling is untouched. */
-private fun Modifier.pinchColumns(enabled: Boolean, columns: Int, onChange: (Int) -> Unit): Modifier =
-    if (!enabled) this else pointerInput(columns) {
+/** Photos and headers in display order; the same list serves every column count. */
+private fun morphNodes(groups: List<DayGroup>): List<MorphNode> = buildList {
+    groups.forEach { g ->
+        if (g.label.isNotEmpty()) add(MorphNode("h:${g.key}", null, g.label))
+        g.items.forEach { add(MorphNode("m:${it.id}", it, null)) }
+    }
+}
+
+/**
+ * Where every node sits for [columns], mirroring exactly what the LazyColumn lays out:
+ * same rows, same spacing, same padding. All values in px.
+ */
+private fun morphGeometry(
+    groups: List<DayGroup>,
+    nodeIndex: Map<String, Int>,
+    style: GridStyle,
+    columns: Int,
+    widthDp: Float,
+    spacingDp: Float,
+    density: Float,
+    padStartPx: Float,
+    padTopPx: Float,
+    headerHeightPx: Float,
+) : MorphGeometry {
+    val rects = FloatArray(nodeIndex.size * 4)
+    val widthPx = widthDp * density
+    val gap = spacingDp * density
+    var y = padTopPx
+    fun put(i: Int, l: Float, t: Float, r: Float, b: Float) {
+        rects[i * 4] = l; rects[i * 4 + 1] = t; rects[i * 4 + 2] = r; rects[i * 4 + 3] = b
+    }
+    groups.forEach { g ->
+        if (g.label.isNotEmpty()) {
+            put(nodeIndex.getValue("h:${g.key}"), padStartPx, y, padStartPx + widthPx, y + headerHeightPx)
+            y += headerHeightPx + gap
+        }
+        buildRows(g, style, columns, widthDp, spacingDp).forEach { e ->
+            if (e !is Entry.TileRow) return@forEach
+            val slots = e.items.size + if (e.filler > 0f) 1 else 0
+            val total = e.weights.sum() + e.filler
+            val available = widthPx - gap * (slots - 1)
+            val rowHeight = e.height?.let { it.value * density } ?: (available / total)
+            var x = padStartPx
+            e.items.forEachIndexed { i, item ->
+                val w = available * e.weights[i] / total
+                put(nodeIndex.getValue("m:${item.id}"), x, y, x + w, y + rowHeight)
+                x += w + gap
+            }
+            y += rowHeight + gap
+        }
+    }
+    return MorphGeometry(rects)
+}
+
+/**
+ * Two-finger pinch reports a running scale and its centre. Runs on the Initial pass
+ * so the list doesn't scroll while two fingers are down; single-finger scrolling is untouched.
+ */
+private fun Modifier.pinchGesture(
+    enabled: Boolean,
+    onStart: (centroid: Offset) -> Unit = {},
+    onZoom: (scale: Float, centroid: Offset) -> Unit,
+    onEnd: (scale: Float, centroid: Offset) -> Unit,
+): Modifier =
+    if (!enabled) this else pointerInput(Unit) {
         awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false)
-            var zoom = 1f
-            var done = false
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var scale = 1f
+            var centroid = Offset.Zero
+            var pinching = false
             do {
-                val event = awaitPointerEvent()
-                if (event.changes.size > 1 && !done) {
-                    zoom *= event.calculateZoom()
-                    val next = when {
-                        zoom > 1.3f -> columns - 1
-                        zoom < 0.75f -> columns + 1
-                        else -> columns
-                    }.coerceIn(2, 5)
-                    if (next != columns) {
-                        onChange(next)
-                        done = true
-                    }
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } > 1) {
+                    centroid = event.calculateCentroid(useCurrent = true)
+                    if (!pinching) onStart(centroid)
+                    pinching = true
+                    scale = (scale * event.calculateZoom()).coerceIn(MIN_SCALE, MAX_SCALE)
+                    onZoom(scale, centroid)
                     event.changes.forEach { it.consume() }
                 }
             } while (event.changes.any { it.pressed })
+            if (pinching) onEnd(scale, centroid)
         }
     }
+
+/** Lazy keys are media ids (Long) or "r:/l:id" strings; headers ("h:…") map to null. */
+private fun keyToId(key: Any): Long? = when (key) {
+    is Long -> key
+    is String -> if (key.startsWith("h:")) null else key.substringAfter(':').toLongOrNull()
+    else -> null
+}
+
+private const val DAY_MS = 24L * 60 * 60 * 1000
+private const val MIN_SCALE = 0.15f
+private const val MAX_SCALE = 6f
+const val MIN_COLUMNS = 1
+/** Practical ceiling: past this, tiles are a few pixels wide. */
+const val MAX_COLUMNS = 30
 
 @Composable
 fun MediaGrid(
@@ -252,7 +343,105 @@ fun MediaGrid(
     ) else contentPadding
     val groups = remember(items, showDates, dateFormat) { groupByDay(items, showDates, dateFormat) }
     val onColumns by rememberUpdatedState(layout.onColumnsChange)
-    val gridModifier = modifier.pinchColumns(layout.pinchToZoom, columns) { onColumns(it) }
+    var liveColumns by remember(columns) { mutableIntStateOf(columns) }
+    val currentColumns by rememberUpdatedState(liveColumns)
+
+    // Pinch zoom, Google Photos style: while fingers move, the existing grid is only
+    // scaled on the GPU (graphicsLayer, no recomposition). On release the column count
+    // changes once, the grid re-lays out, and the scale springs back to 1 from the
+    // equivalent size, so the motion stays continuous.
+    val scope = rememberCoroutineScope()
+    val zoom = remember { Animatable(1f) }
+    var origin by remember { mutableStateOf(TransformOrigin.Center) }
+    var gridSize by remember { mutableStateOf(IntSize.Zero) }
+    val listState = rememberLazyListState()
+    val staggeredState = rememberLazyStaggeredGridState()
+    /** Item under the fingers when the pinch ended, and its y on screen, to keep it in place. */
+    var anchor by remember { mutableStateOf<Pair<Long, Float>?>(null) }
+    val itemIdAt: (Float) -> Long? = { y ->
+        // (media id, top, bottom) of each visible row or tile; headers have no id.
+        val visible = if (layout.style == GridStyle.MASONRY) {
+            staggeredState.layoutInfo.visibleItemsInfo.map { Triple(keyToId(it.key), it.offset.y, it.offset.y + it.size.height) }
+        } else {
+            listState.layoutInfo.visibleItemsInfo.map { Triple(keyToId(it.key), it.offset, it.offset + it.size) }
+        }.filter { it.first != null }
+        (visible.firstOrNull { y.toInt() in it.second..it.third } ?: visible.firstOrNull())?.first
+    }
+
+    // Samsung-style morph for row-based grids: while pinching, every photo glides between
+    // the layouts for the two nearest column counts (see PinchMorph.kt). Masonry, whose
+    // columns flow independently, falls back to scaling the grid on the GPU.
+    val morphs = style != GridStyle.MASONRY && style != GridStyle.LIST
+    var morph by remember { mutableStateOf<MorphState?>(null) }
+    /** Builds a MorphState from the current layout; set inside BoxWithConstraints, where sizes are known. */
+    val morphStarter = remember { arrayOfNulls<(Offset) -> MorphState?>(1) }
+    var morphStartColumns by remember { mutableIntStateOf(columns) }
+
+    val gridModifier = modifier
+        .testTag("media_grid")
+        .onSizeChanged { gridSize = it }
+        .pinchGesture(
+            enabled = layout.pinchToZoom && style != GridStyle.LIST,
+            onStart = { c ->
+                if (morphs && morph == null) {
+                    morphStartColumns = currentColumns
+                    morph = morphStarter[0]?.invoke(c)
+                }
+            },
+            onZoom = { scale, c ->
+                val m = morph
+                if (m != null) {
+                    // Spreading (scale > 1) means bigger photos, i.e. fewer columns.
+                    m.level = (morphStartColumns / scale).coerceIn(MIN_COLUMNS.toFloat(), MAX_COLUMNS.toFloat())
+                    m.fingerY = c.y
+                } else if (!morphs) {
+                    if (gridSize.width > 0) origin = TransformOrigin(c.x / gridSize.width, c.y / gridSize.height)
+                    scope.launch { zoom.snapTo(scale) }
+                }
+            },
+            onEnd = { scale, c ->
+                val m = morph
+                if (m != null) {
+                    scope.launch {
+                        val target = m.level.roundToInt().coerceIn(MIN_COLUMNS, MAX_COLUMNS)
+                        // Glide the remaining distance to the nearest whole column count.
+                        Animatable(m.level).animateTo(target.toFloat(), spring(dampingRatio = 0.9f, stiffness = 600f)) { m.level = value }
+                        if (target != morphStartColumns) {
+                            val g = m.geometry(target)
+                            val id = m.nodes[m.anchor].item?.id
+                            anchor = id?.let { it to (g.top(m.anchor) - m.scrollFor(target)) }
+                            liveColumns = target
+                            onColumns(target)
+                            // Keep the morph on screen until the real grid has scrolled into place.
+                            snapshotFlow { anchor }.first { it == null }
+                        }
+                        morph = null
+                    }
+                    return@pinchGesture
+                }
+                if (morphs) return@pinchGesture
+                val from = currentColumns
+                val target = (from / scale).roundToInt().coerceIn(MIN_COLUMNS, MAX_COLUMNS)
+                scope.launch {
+                    if (target == from) {
+                        zoom.animateTo(1f, spring(dampingRatio = 0.8f, stiffness = 500f))
+                    } else {
+                        anchor = itemIdAt(c.y)?.let { it to c.y }
+                        // Tiles are now width/target; start at the size the user pinched to.
+                        zoom.snapTo(scale * target / from)
+                        liveColumns = target
+                        onColumns(target)
+                        zoom.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = 400f))
+                    }
+                }
+            },
+        )
+    val topPaddingPx = with(LocalDensity.current) { padding.calculateTopPadding().toPx() }
+    val zoomLayer = Modifier.graphicsLayer {
+        scaleX = zoom.value
+        scaleY = zoom.value
+        transformOrigin = origin
+    }
 
     val tile: @Composable (MediaItem, Modifier, Int) -> Unit = { item, mod, sizePx ->
         MediaItemCard(
@@ -282,12 +471,28 @@ fun MediaGrid(
             },
         )
     }
-    val cellPx = rememberCellSizePx(columns, LocalConfiguration.current.screenWidthDp)
+    val cellPx = rememberCellSizePx(liveColumns, LocalConfiguration.current.screenWidthDp)
 
     if (style == GridStyle.MASONRY) {
+        LaunchedEffect(liveColumns) {
+            val (id, y) = anchor ?: return@LaunchedEffect
+            anchor = null
+            var index = 0
+            run {
+                groups.forEach { g ->
+                    if (g.label.isNotEmpty()) index++
+                    val i = g.items.indexOfFirst { it.id == id }
+                    if (i >= 0) { index += i; return@run }
+                    index += g.items.size
+                }
+            }
+            staggeredState.scrollToItem(index)
+            staggeredState.scrollBy(-(y - topPaddingPx))
+        }
         LazyVerticalStaggeredGrid(
-            columns = StaggeredGridCells.Fixed(columns),
-            modifier = gridModifier,
+            columns = StaggeredGridCells.Fixed(liveColumns),
+            state = staggeredState,
+            modifier = gridModifier.then(zoomLayer),
             contentPadding = padding,
             verticalItemSpacing = spacing.dp,
             horizontalArrangement = Arrangement.spacedBy(spacing.dp),
@@ -304,15 +509,76 @@ fun MediaGrid(
 
     BoxWithConstraints(gridModifier) {
         val widthDp = maxWidth.value - padding.calculateStartPadding(dir).value - padding.calculateEndPadding(dir).value
-        val entries = remember(groups, style, columns, widthDp, spacing) {
+        val entries = remember(groups, style, liveColumns, widthDp, spacing) {
             groups.flatMap { g ->
                 (if (g.label.isNotEmpty()) listOf<Entry>(Entry.Header(g)) else emptyList()) +
-                    buildRows(g, style, columns, widthDp, spacing.toFloat())
+                    buildRows(g, style, liveColumns, widthDp, spacing.toFloat())
             }
         }
         val density = LocalDensity.current
+        val padStartPx = with(density) { padding.calculateStartPadding(dir).toPx() }
+        val defaultHeaderPx = with(density) { 52.dp.toPx() }
+        morphStarter[0] = start@{ c ->
+            val nodes = morphNodes(groups)
+            if (nodes.isEmpty()) return@start null
+            val nodeIndex = HashMap<String, Int>(nodes.size * 2).apply { nodes.forEachIndexed { i, n -> put(n.key, i) } }
+            val visible = listState.layoutInfo.visibleItemsInfo
+            // Real header height, so the morph lines up with the list pixel for pixel.
+            val headerPx = visible.firstOrNull { (it.key as? String)?.startsWith("h:") == true }?.size?.toFloat() ?: defaultHeaderPx
+            val geometryFor = { cols: Int ->
+                morphGeometry(groups, nodeIndex, style, cols, widthDp, spacing.toFloat(), density.density, padStartPx, topPaddingPx, headerPx)
+            }
+            val g0 = geometryFor(liveColumns)
+            // Current scroll in content px, from any visible row.
+            val row = visible.firstOrNull { (it.key as? String)?.startsWith("r:") == true } ?: return@start null
+            val rowNode = nodeIndex["m:${(row.key as String).removePrefix("r:")}"] ?: return@start null
+            val scroll0 = g0.top(rowNode) - row.offset
+            // The photo under the fingers (or the nearest one in that row).
+            val cy = c.y + scroll0
+            var a = g0.firstBelow(cy, nodes.size)
+            var best = a
+            var bestDist = Float.MAX_VALUE
+            while (a < nodes.size && g0.top(a) <= cy + g0.height(a)) {
+                if (nodes[a].item != null) {
+                    val dx = when {
+                        c.x < g0.left(a) -> g0.left(a) - c.x
+                        c.x > g0.right(a) -> c.x - g0.right(a)
+                        else -> 0f
+                    }
+                    val dy = if (cy in g0.top(a)..g0.bottom(a)) 0f else minOf(kotlin.math.abs(cy - g0.top(a)), kotlin.math.abs(cy - g0.bottom(a)))
+                    if (dx + dy < bestDist) { bestDist = dx + dy; best = a }
+                }
+                a++
+            }
+            if (nodes[best].item == null) best = (best + 1).coerceAtMost(nodes.lastIndex)
+            val fraction = ((cy - g0.top(best)) / g0.height(best).coerceAtLeast(1f)).coerceIn(0f, 1f)
+            MorphState(nodes, geometryFor, best, fraction, liveColumns.toFloat(), c.y)
+        }
+        // After a pinch re-layout, scroll so the anchored photo sits exactly where the
+        // morph left it (anchor.second = its top on screen).
+        LaunchedEffect(entries) {
+            val (id, y) = anchor ?: return@LaunchedEffect
+            val index = entries.indexOfFirst { e ->
+                when (e) {
+                    is Entry.TileRow -> e.items.any { it.id == id }
+                    is Entry.ListRow -> e.item.id == id
+                    is Entry.Header -> false
+                }
+            }
+            if (index >= 0) {
+                listState.scrollToItem(index)
+                val offset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.offset?.toFloat() ?: topPaddingPx
+                listState.scrollBy(offset - y)
+            }
+            anchor = null
+        }
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .then(zoomLayer)
+                // Hidden (but still laid out) while the morph layer stands in for it.
+                .graphicsLayer { alpha = if (morph != null) 0f else 1f },
             contentPadding = padding,
             verticalArrangement = Arrangement.spacedBy(if (style == GridStyle.LIST) 2.dp else spacing.dp),
         ) {
@@ -344,6 +610,15 @@ fun MediaGrid(
                     }
                 }
             }
+        }
+        morph?.let { m ->
+            MorphLayer(
+                state = m,
+                viewportHeight = constraints.maxHeight.toFloat(),
+                style = style,
+                darkMode = darkMode,
+                thumbnailPx = cellPx,
+            )
         }
     }
 }

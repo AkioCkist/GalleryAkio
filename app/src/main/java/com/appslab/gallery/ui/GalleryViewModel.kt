@@ -14,7 +14,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -42,17 +46,32 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     /** Shuffle seed for [SortOption.RANDOM]; changes only on explicit reshuffle. */
     private val randomSeed = MutableStateFlow(Random.nextLong())
 
-    val library: StateFlow<LibraryState> = combine(raw, settings, randomSeed) { items, s, seed ->
+    /** Only the settings that change what the library shows; grid columns, theme etc. don't re-sort it. */
+    private data class LibraryOptions(
+        val filters: Set<com.appslab.gallery.data.MediaFilterType>,
+        val sortOption: SortOption,
+        val sortOrder: SortOrder,
+        val pinned: List<String>,
+    )
+
+    val library: StateFlow<LibraryState> = combine(
+        raw,
+        settings.map { LibraryOptions(it.mediaFilters, it.sortOption, it.sortOrder, it.pinnedAlbums) }.distinctUntilChanged(),
+        randomSeed,
+    ) { items, o, seed ->
         if (items == null) return@combine LibraryState(isLoading = true)
-        val filtered = if (s.mediaFilters.isEmpty()) items
-        else items.filter { item -> s.mediaFilters.any { it.matches(item) } }
+        val filtered = if (o.filters.isEmpty()) items
+        else items.filter { item -> o.filters.any { it.matches(item) } }
         LibraryState(
             isLoading = false,
             all = items,
-            visible = sort(filtered, s.sortOption, s.sortOrder, seed),
-            albums = media.buildAlbums(items, s.pinnedAlbums),
+            visible = sort(filtered, o.sortOption, o.sortOrder, seed),
+            albums = media.buildAlbums(items, o.pinned),
         )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryState())
+    }
+        // Sorting ~10k items must never run on the main thread.
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LibraryState())
 
     private var started = false
 

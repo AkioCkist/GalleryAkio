@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import coil3.size.Size
 import com.appslab.gallery.data.MediaItem
 import com.appslab.gallery.ui.theme.LocalCustomColors
@@ -68,12 +69,16 @@ fun MediaThumbnail(
     selected: Boolean = false,
 ) {
     val context = LocalContext.current
-    val request = remember(item.uri, cellSizePx) {
+    // Decode at one of three fixed sizes, so pinching between nearby column counts
+    // reuses the bitmaps already in memory instead of decoding every tile again.
+    val bucket = thumbnailBucket(cellSizePx)
+    val request = remember(item.uri, bucket) {
         ImageRequest.Builder(context)
             .data(item.uri)
-            .size(Size(cellSizePx, cellSizePx))
-            // The photo viewer reuses this key as its placeholder.
-            .memoryCacheKey("thumb:${item.id}")
+            .size(Size(bucket, bucket))
+            .memoryCacheKey(thumbnailKey(item.id, bucket))
+            // A crossfade per tile means extra frames of work while flinging.
+            .crossfade(false)
             .build()
     }
     Box(modifier.background(LocalCustomColors.current.shimmer)) {
@@ -94,6 +99,14 @@ fun MediaThumbnail(
         }
     }
 }
+
+fun thumbnailBucket(cellSizePx: Int): Int = when {
+    cellSizePx <= 256 -> 256
+    cellSizePx <= 512 -> 512
+    else -> 1024
+}
+
+fun thumbnailKey(id: Long, bucket: Int) = "thumb:$id:$bucket"
 
 @Composable
 fun rememberCellSizePx(columns: Int, screenWidthDp: Int): Int {

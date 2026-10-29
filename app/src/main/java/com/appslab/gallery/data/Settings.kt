@@ -31,7 +31,6 @@ data class GallerySettings(
     val gridSpacing: GridSpacing = GridSpacing.AUTO,
     val showDateHeaders: Boolean = true,
     val showVideoDuration: Boolean = true,
-    val pinchToZoom: Boolean = true,
 )
 
 /** On-device AI search. Each part can be switched off to save battery and time. */
@@ -57,7 +56,7 @@ class SettingsRepository(context: Context) {
         theme = runCatching { AppTheme.valueOf(prefs.getString(KEY_THEME, null) ?: "DEFAULT") }
             .getOrDefault(AppTheme.DEFAULT),
         darkMode = prefs.getBoolean(KEY_DARK_MODE, true),
-        gridColumns = prefs.getInt(KEY_GRID_COLUMNS, 3).coerceIn(2, 5),
+        gridColumns = prefs.getInt(KEY_GRID_COLUMNS, 3).coerceIn(1, 30),
         sortOption = SortOption.fromValue(prefs.getString(KEY_SORT_OPTION, null)),
         sortOrder = prefs.getString(KEY_SORT_ORDER, "descending").toSortOrder(),
         mediaFilters = prefs.getStringSet(KEY_MEDIA_FILTERS, null).orEmpty()
@@ -86,14 +85,12 @@ class SettingsRepository(context: Context) {
         gridSpacing = runCatching { GridSpacing.valueOf(prefs.getString(KEY_GRID_SPACING, null)!!) }.getOrDefault(GridSpacing.AUTO),
         showDateHeaders = prefs.getBoolean(KEY_DATE_HEADERS, true),
         showVideoDuration = prefs.getBoolean(KEY_VIDEO_DURATION, true),
-        pinchToZoom = prefs.getBoolean(KEY_PINCH_ZOOM, true),
     )
 
     fun setGridStyle(style: GridStyle) = change({ it.copy(gridStyle = style) }) { putString(KEY_GRID_STYLE, style.name) }
     fun setGridSpacing(spacing: GridSpacing) = change({ it.copy(gridSpacing = spacing) }) { putString(KEY_GRID_SPACING, spacing.name) }
     fun setShowDateHeaders(on: Boolean) = change({ it.copy(showDateHeaders = on) }) { putBoolean(KEY_DATE_HEADERS, on) }
     fun setShowVideoDuration(on: Boolean) = change({ it.copy(showVideoDuration = on) }) { putBoolean(KEY_VIDEO_DURATION, on) }
-    fun setPinchToZoom(on: Boolean) = change({ it.copy(pinchToZoom = on) }) { putBoolean(KEY_PINCH_ZOOM, on) }
 
     fun setAi(ai: AiSettings) = change({ it.copy(ai = ai) }) {
         putBoolean(KEY_AI_ENABLED, ai.enabled)
@@ -111,7 +108,7 @@ class SettingsRepository(context: Context) {
     fun setTheme(theme: AppTheme) = change({ it.copy(theme = theme) }) { putString(KEY_THEME, it.theme.name) }
     fun setDarkMode(dark: Boolean) = change({ it.copy(darkMode = dark) }) { putBoolean(KEY_DARK_MODE, it.darkMode) }
     fun setGridColumns(columns: Int) =
-        change({ it.copy(gridColumns = columns.coerceIn(2, 5)) }) { putInt(KEY_GRID_COLUMNS, it.gridColumns) }
+        change({ it.copy(gridColumns = columns.coerceIn(1, 30)) }) { putInt(KEY_GRID_COLUMNS, it.gridColumns) }
     fun setSortOption(option: SortOption) =
         change({ it.copy(sortOption = option) }) { putString(KEY_SORT_OPTION, it.sortOption.value) }
     fun setSortOrder(order: SortOrder) =
@@ -135,6 +132,20 @@ class SettingsRepository(context: Context) {
         val pinned = if (relativePath in it.pinnedAlbums) it.pinnedAlbums - relativePath else it.pinnedAlbums + relativePath
         it.copy(pinnedAlbums = pinned)
     }) { putString(KEY_PINNED_ALBUMS, it.pinnedAlbums.joinToString(",")) }
+
+    /**
+     * Puts every setting back to its default. The user's own data, favourites and
+     * pinned albums, is kept: only preferences are reset.
+     */
+    fun resetToDefaults() {
+        val keep = _settings.value
+        prefs.edit {
+            clear()
+            putStringSet(KEY_FAVORITE_IDS, keep.favoriteIds.map(Long::toString).toSet())
+            putString(KEY_PINNED_ALBUMS, keep.pinnedAlbums.joinToString(","))
+        }
+        _settings.value = read()
+    }
 
     fun clearPinned() = change({ it.copy(pinnedAlbums = emptyList()) }) { putString(KEY_PINNED_ALBUMS, "") }
 
@@ -166,7 +177,6 @@ class SettingsRepository(context: Context) {
         private const val KEY_GRID_SPACING = "grid_spacing"
         private const val KEY_DATE_HEADERS = "show_date_headers"
         private const val KEY_VIDEO_DURATION = "show_video_duration"
-        private const val KEY_PINCH_ZOOM = "pinch_to_zoom"
         private const val KEY_AI_ENABLED = "ai_enabled"
         private const val KEY_AI_FACES = "ai_faces"
         private const val KEY_AI_TEXT = "ai_text"

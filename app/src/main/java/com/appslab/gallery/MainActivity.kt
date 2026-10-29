@@ -68,13 +68,12 @@ class MainActivity : ComponentActivity() {
                     window.decorView.setBackgroundColor(background.toArgb())
                     onDispose { }
                 }
-                val gridLayout = remember(settings.gridStyle, settings.gridSpacing, settings.showDateHeaders, settings.showVideoDuration, settings.pinchToZoom) {
+                val gridLayout = remember(settings.gridStyle, settings.gridSpacing, settings.showDateHeaders, settings.showVideoDuration) {
                     GridLayout(
                         style = settings.gridStyle,
                         spacing = settings.gridSpacing.resolve(settings.gridStyle),
                         showDateHeaders = settings.showDateHeaders,
                         showVideoDuration = settings.showVideoDuration,
-                        pinchToZoom = settings.pinchToZoom,
                         onColumnsChange = viewModel.settingsRepo::setGridColumns,
                     )
                 }

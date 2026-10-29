@@ -70,7 +70,8 @@ fun ZoomableImage(
             .data(item.uri)
             // Decode at screen size; Coil keeps the thumbnail as placeholder meanwhile.
             .precision(Precision.INEXACT)
-            .placeholderMemoryCacheKey("thumb:${item.id}")
+            // The 512 px bucket is what the default 3-column grid decodes.
+            .placeholderMemoryCacheKey(thumbnailKey(item.id, 512))
             .build()
     }
 

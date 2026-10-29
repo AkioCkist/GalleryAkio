@@ -81,7 +81,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class SettingsDialog { GRID, SORT, FILTER, DATE }
+private enum class SettingsDialog { SORT, FILTER, DATE, RESET }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -149,16 +149,7 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                     Switch(checked = s.showVideoDuration, onCheckedChange = repo::setShowVideoDuration)
                 }
             }
-            item {
-                SettingCard(painterResource(R.drawable.ratio), "Pinch to zoom grid", "Pinch the grid to change the number of columns") {
-                    Switch(checked = s.pinchToZoom, onCheckedChange = repo::setPinchToZoom)
-                }
-            }
-
             item { SectionHeader("GALLERY") }
-            item {
-                SettingCard(painterResource(R.drawable.adds), "Grid size", "${s.gridColumns} columns", onClick = { dialog = SettingsDialog.GRID })
-            }
             item {
                 SettingCard(painterResource(R.drawable.order1), "Sort photos", s.sortOption.label, onClick = { dialog = SettingsDialog.SORT })
             }
@@ -239,6 +230,14 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                 })
             }
 
+            item {
+                SettingCard(
+                    painterResource(R.drawable.restore), "Restore default settings",
+                    "Undo every settings change · photos and favorites are kept",
+                    onClick = { dialog = SettingsDialog.RESET },
+                )
+            }
+
             item { SectionHeader("ABOUT") }
             item {
                 SettingCard(painterResource(R.drawable.info), "GalleryAkio", "Version ${BuildConfig.VERSION_NAME}")
@@ -262,13 +261,23 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
     }
 
     when (dialog) {
-        SettingsDialog.GRID -> ChoiceDialog(
-            title = "Choose Grid Size",
-            options = (2..5).toList(),
-            selected = s.gridColumns,
-            label = { "$it columns" },
-            onSelect = repo::setGridColumns,
-            onDismiss = { dialog = null },
+        SettingsDialog.RESET -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text("Restore defaults?", fontFamily = CqMono) },
+            text = {
+                Text(
+                    "Theme, layout, sorting, filters, viewing and AI search settings go back to how the app first came. " +
+                        "Your photos, favorites and pinned albums are not touched.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    repo.resetToDefaults()
+                    dialog = null
+                    Toast.makeText(context, "Settings restored to default", Toast.LENGTH_SHORT).show()
+                }) { Text("Restore", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
         )
         SettingsDialog.SORT -> ChoiceDialog(
             title = "Sort photos",
