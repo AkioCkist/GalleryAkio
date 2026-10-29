@@ -7,6 +7,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.ContentObserver
 import android.database.Cursor
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -186,6 +187,28 @@ class MediaRepository(context: Context) {
     suspend fun rename(item: MediaItem, newName: String): Boolean = withContext(Dispatchers.IO) {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, newName) }
         runCatching { resolver.update(item.uri, values, null, null) > 0 }.getOrDefault(false)
+    }
+
+    /** Saves [bitmap] as a JPEG in Pictures/Gallery (a captured video frame). */
+    suspend fun saveImage(bitmap: Bitmap, displayName: String): Boolean = withContext(Dispatchers.IO) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Gallery")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+        val uri = runCatching { resolver.insert(collectionFor(MediaType.PHOTO), values) }.getOrNull() ?: return@withContext false
+        val ok = runCatching {
+            resolver.openOutputStream(uri)?.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) } == true
+        }.getOrDefault(false)
+        if (!ok) {
+            runCatching { resolver.delete(uri, null, null) }
+        } else if (Build.VERSION.SDK_INT >= 29) {
+            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        }
+        ok
     }
 
     private fun collectionFor(type: MediaType): Uri = when (type) {
