@@ -132,7 +132,8 @@ fun SelectionActions(
         onSelectAll = { selection.setAll(items.map { it.id }) },
         onShare = { shareItems(context, selectedItems) },
         onDelete = { confirmTrash = true },
-        modifier = modifier.navigationBarsPadding(),
+        // Sits above the floating nav bar on the main tabs (0 elsewhere).
+        modifier = modifier.navigationBarsPadding().padding(bottom = LocalBottomBarPadding.current),
     )
 
     if (confirmTrash) {

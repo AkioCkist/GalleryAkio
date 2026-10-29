@@ -55,6 +55,8 @@ dependencies {
     implementation(libs.compose.material.icons.extended)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)
+    // Liquid glass navigation bar (blur, vibrancy and lens over the content behind it).
+    implementation(libs.backdrop)
     implementation(libs.coil.gif)
     implementation(libs.coil.video)
     implementation(libs.media3.exoplayer)

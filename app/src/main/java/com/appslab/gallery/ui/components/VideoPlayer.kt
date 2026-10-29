@@ -8,10 +8,14 @@ import android.util.LruCache
 import android.view.TextureView
 import android.widget.Toast
 import androidx.annotation.OptIn
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -116,7 +120,7 @@ object VideoPositions {
 private const val AUTO_HIDE_MS = 3_000L
 private val FRAME_WIDTH = 56.dp
 private val STRIP_HEIGHT = 52.dp
-private val ControlBackground = Color.Black.copy(alpha = 0.45f)
+private val CONTROL_SIZE = 36.dp
 
 /** The strip stops where the finger lets go: scrubbing needs precision, not momentum. */
 private val NoFling = object : FlingBehavior {
@@ -291,35 +295,47 @@ fun VideoPlayer(
         }
     }
 
+    // The glass controls refract the video playing behind them.
+    val backdrop = rememberLayerBackdrop {
+        drawRect(Color.Black)
+        drawContent()
+    }
+    // The HUD stays composed and only fades: composing it (filmstrip, buttons, glass) on
+    // every show cost a ~30 ms frame, a visible stutter in the video right as it appeared.
+    val hud by animateFloatAsState(
+        if (controlsVisible) 1f else 0f,
+        tween(if (controlsVisible) 150 else 200),
+        label = "hud_alpha",
+    )
+
     Box(modifier.fillMaxSize()) {
-        ZoomBox(resetKey = item.id, isCurrentPage = true, onTap = { onControlsChange(!controlsVisible) }) {
-            Box(Modifier.aspectRatio(aspect)) {
-                AndroidView(
-                    factory = { ctx -> TextureView(ctx).also { textureView[0] = it; player.setVideoTextureView(it) } },
-                    onRelease = { player.clearVideoTextureView(it); textureView[0] = null },
-                    modifier = Modifier.fillMaxSize(),
-                )
-                // The still stays on top until the first frame is drawn, so opening a video never flashes black.
-                if (!firstFrame) {
-                    AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+            ZoomBox(resetKey = item.id, isCurrentPage = true, onTap = { onControlsChange(!controlsVisible) }) {
+                Box(Modifier.aspectRatio(aspect)) {
+                    AndroidView(
+                        factory = { ctx -> TextureView(ctx).also { textureView[0] = it; player.setVideoTextureView(it) } },
+                        onRelease = { player.clearVideoTextureView(it); textureView[0] = null },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    // The still stays on top until the first frame is drawn, so opening a video never flashes black.
+                    if (!firstFrame) {
+                        AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                    }
                 }
             }
         }
 
-        AnimatedVisibility(
-            controlsVisible,
-            enter = fadeIn(tween(150)),
-            exit = fadeOut(tween(200)),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset),
-        ) {
-            Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset)) {
+            Column(Modifier.fillMaxWidth().graphicsLayer { alpha = hud }) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CircleButton(Icons.Outlined.PhotoCamera, "Capture frame", onClick = ::captureFrame)
+                    CircleButton(backdrop, Icons.Outlined.PhotoCamera, "Capture frame", controlsVisible, onClick = ::captureFrame)
                     Spacer(Modifier.weight(1f))
                     PlayPill(
+                        backdrop = backdrop,
+                        enabled = controlsVisible,
                         icon = when {
                             // Scrubbing to the very end leaves the player paused there, not "ended".
                             ended || (!isPlaying && duration > 0 && position >= duration - 1000) -> Icons.Rounded.Replay
@@ -331,47 +347,55 @@ fun VideoPlayer(
                         onClick = ::togglePlay,
                     )
                     Spacer(Modifier.weight(1f))
-                    CircleButton(if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, if (muted) "Unmute" else "Mute") {
+                    CircleButton(
+                        backdrop,
+                        if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                        if (muted) "Unmute" else "Mute",
+                        controlsVisible,
+                    ) {
                         muted = !muted
                         player.volume = if (muted) 0f else 1f
                     }
                 }
-                Filmstrip(frames, strip)
+                Filmstrip(frames, strip, enabled = controlsVisible)
+            }
+            // While hidden, a tap where the controls sit brings them back instead of hitting them.
+            if (!controlsVisible) {
+                Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { onControlsChange(true) } })
             }
         }
     }
 }
 
 @Composable
-private fun CircleButton(icon: ImageVector, description: String, onClick: () -> Unit) {
+private fun CircleButton(backdrop: Backdrop, icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
-            .size(44.dp)
-            .clip(CircleShape)
-            .background(ControlBackground)
-            .clickable(onClick = onClick),
+            .size(CONTROL_SIZE)
+            .liquidGlass(backdrop, darkMode = true, lensHeight = 6.dp, lensAmount = 12.dp)
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, description, tint = Color.White, modifier = Modifier.size(22.dp))
+        Icon(icon, description, tint = Color.White, modifier = Modifier.size(18.dp))
     }
 }
 
 @Composable
-private fun PlayPill(icon: ImageVector, position: Long, duration: Long, onClick: () -> Unit) {
+private fun PlayPill(backdrop: Backdrop, enabled: Boolean, icon: ImageVector, position: Long, duration: Long, onClick: () -> Unit) {
     Row(
         Modifier
-            .height(44.dp)
+            .height(CONTROL_SIZE)
+            .liquidGlass(backdrop, darkMode = true, lensHeight = 6.dp, lensAmount = 12.dp)
             .clip(RoundedCornerShape(50))
-            .background(ControlBackground)
-            .clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 20.dp),
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(start = 12.dp, end = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(26.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(clock(position), color = Color.White, fontSize = 15.sp)
-        Text("  /  ", color = Color.White.copy(alpha = 0.5f), fontSize = 15.sp)
-        Text(clock(duration), color = Color.White.copy(alpha = 0.7f), fontSize = 15.sp)
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(clock(position), color = Color.White, fontSize = 14.sp)
+        Text(" / ", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+        Text(clock(duration), color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
     }
 }
 
@@ -427,14 +451,14 @@ private fun rememberFilmstripFrames(item: MediaItem, duration: Long): List<Image
  * the first and last frame reach the playhead, so scroll 0..max maps to 0..duration.
  */
 @Composable
-private fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState) {
+private fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState, enabled: Boolean) {
     BoxWithConstraints(Modifier.fillMaxWidth().height(STRIP_HEIGHT + 8.dp), contentAlignment = Alignment.Center) {
         val half = maxWidth / 2
         Row(
             Modifier
                 .fillMaxSize()
                 .nestedScroll(KeepScroll)
-                .horizontalScroll(state, flingBehavior = NoFling)
+                .horizontalScroll(state, enabled = enabled, flingBehavior = NoFling)
                 .padding(vertical = 4.dp),
         ) {
             Spacer(Modifier.width(half))

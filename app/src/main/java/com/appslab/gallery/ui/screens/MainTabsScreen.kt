@@ -1,6 +1,17 @@
 package com.appslab.gallery.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,51 +58,99 @@ import com.appslab.gallery.R
 import com.appslab.gallery.data.SortOrder
 import com.appslab.gallery.ui.GalleryViewModel
 import com.appslab.gallery.ui.Routes
-import com.appslab.gallery.ui.components.TabHeader
-import com.appslab.gallery.ui.components.TabHeaderHeight
+import com.appslab.gallery.ui.components.GlassCircleButton
+import com.appslab.gallery.ui.components.GlassNavBar
+import com.appslab.gallery.ui.components.NAV_BAR_HEIGHT
+import com.appslab.gallery.ui.components.NAV_BAR_MARGIN
+import com.appslab.gallery.ui.components.NavTab
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Photo
+import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.ui.graphics.Brush
 import com.appslab.gallery.ui.theme.CqMono
 import com.appslab.gallery.ui.theme.LocalCustomColors
 import kotlinx.coroutines.launch
 
-private val Tabs = listOf("PHOTOS", "VIDEOS", "ALBUMS", "SEARCH")
+private val Tabs = listOf(
+    NavTab("PHOTOS", Icons.Rounded.Photo),
+    NavTab("VIDEOS", Icons.Rounded.PlayCircle),
+    NavTab("ALBUMS", Icons.Rounded.PhotoLibrary),
+    NavTab("SEARCH", Icons.Rounded.Search),
+)
 private const val TAB_PHOTOS = 0
 private const val TAB_VIDEOS = 1
 private const val TAB_ALBUMS = 2
 
-/** Space the tab pages leave at the top so content starts under the overlaid header. */
+/** Space the tab pages leave at the top, below the status bar. */
 val LocalHeaderPadding = staticCompositionLocalOf<Dp> { 0.dp }
+
+/** Space the floating nav bar takes at the bottom, above the system navigation bar. */
+val LocalBottomBarPadding = staticCompositionLocalOf<Dp> { 0.dp }
 
 @Composable
 fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val pager = rememberPagerState { Tabs.size }
     val scope = rememberCoroutineScope()
-    var headerVisible by remember { mutableStateOf(true) }
-    var lastToggle by remember { mutableStateOf(0L) }
-
-    // Same rule as TabBarVisibilityState: ignore flips closer than 100 ms apart.
-    fun setVisible(v: Boolean) {
-        val now = System.currentTimeMillis()
-        if (v != headerVisible && now - lastToggle > 100) {
-            headerVisible = v
-            lastToggle = now
-        }
+    val background = MaterialTheme.colorScheme.background
+    // What the glass bar shows through: the tab pages, recorded into a layer each frame.
+    val backdrop = rememberLayerBackdrop {
+        drawRect(background)
+        drawContent()
     }
+
+    // The bar slides away while the user scrolls down through photos, and comes back when
+    // they scroll up, tap empty space or change tab.
+    var navVisible by remember { mutableStateOf(true) }
     val hideOnScroll = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (available.y < -6f) setVisible(false) else if (available.y > 6f) setVisible(true)
+                if (available.y < -6f) navVisible = false else if (available.y > 6f) navVisible = true
                 return Offset.Zero
             }
         }
     }
-    LaunchedEffect(pager.currentPage) { headerVisible = true }
+    LaunchedEffect(pager.currentPage) { navVisible = true }
+    val hidden by animateFloatAsState(
+        if (navVisible) 0f else 1f,
+        spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "nav_hidden",
+    )
+    val density = LocalDensity.current
+    val navInset = WindowInsets.navigationBars.getBottom(density)
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        CompositionLocalProvider(LocalHeaderPadding provides TabHeaderHeight) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(background)
+            // A tap nothing else used (a photo or button consumes its own) is a tap on empty space.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
+                    val up = waitForUpOrCancellation(PointerEventPass.Final)
+                    if (up != null && !up.isConsumed) navVisible = true
+                }
+            },
+    ) {
+        CompositionLocalProvider(
+            LocalHeaderPadding provides 4.dp,
+            LocalBottomBarPadding provides NAV_BAR_HEIGHT + NAV_BAR_MARGIN,
+        ) {
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().nestedScroll(hideOnScroll),
+                modifier = Modifier.fillMaxSize().nestedScroll(hideOnScroll).layerBackdrop(backdrop),
                 // Only the visible tab stays composed: each tab is a full grid, and keeping a
                 // second one alive doubled the work of coming back from the viewer.
                 beyondViewportPageCount = 0,
@@ -104,28 +163,45 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
                 }
             }
         }
-        TabHeader(
-            tabs = Tabs,
-            selected = pager.currentPage,
-            visible = headerVisible,
-            darkMode = settings.darkMode,
-            onSelect = { scope.launch { pager.animateScrollToPage(it) } },
-            modifier = Modifier.align(Alignment.TopCenter),
+        // Content scrolls under the transparent status bar; fade it so the clock stays readable.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsTopHeight(WindowInsets.statusBars)
+                .background(Brush.verticalGradient(listOf(background, background.copy(alpha = 0.7f)))),
+        )
+        Row(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = NAV_BAR_MARGIN)
+                // Slid on the GPU, fully below the screen edge when hidden.
+                .graphicsLayer {
+                    translationY = hidden * (size.height + NAV_BAR_MARGIN.toPx() + navInset)
+                    alpha = 1f - hidden * 0.5f
+                },
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            ThreeDotMenu(viewModel, navController, pager.currentPage, iconColor = if (settings.darkMode) Color.White else Color(0xFF212121))
+            GlassNavBar(
+                backdrop = backdrop,
+                tabs = Tabs,
+                position = { pager.currentPage + pager.currentPageOffsetFraction },
+                onSelect = { scope.launch { pager.animateScrollToPage(it) } },
+                darkMode = settings.darkMode,
+            )
+            ThreeDotMenu(viewModel, navController, pager.currentPage, backdrop, settings.darkMode)
         }
     }
 }
 
 @Composable
-private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavController, tab: Int, iconColor: Color) {
+private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavController, tab: Int, backdrop: Backdrop, darkMode: Boolean) {
     var expanded by remember { mutableStateOf(false) }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val shape = RoundedCornerShape(20.dp)
     Box {
-        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
-            Icon(painterResource(R.drawable.more2), "More options", tint = iconColor, modifier = Modifier.size(24.dp))
-        }
+        GlassCircleButton(backdrop, darkMode, Icons.Rounded.MoreVert, "More options", onClick = { expanded = true })
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },

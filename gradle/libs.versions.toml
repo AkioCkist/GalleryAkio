@@ -14,6 +14,7 @@ profileinstaller = "1.4.1"
 mlkitLabeling = "17.0.9"
 mlkitFace = "16.1.7"
 mlkitText = "16.0.1"
+backdrop = "2.0.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -44,6 +45,8 @@ mlkit-image-labeling = { group = "com.google.mlkit", name = "image-labeling", ve
 mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlkitFace" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitText" }
 kotlin-gradle-plugin ={ group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
+
+backdrop = { group = "io.github.kyant0", name = "backdrop", version.ref = "backdrop" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

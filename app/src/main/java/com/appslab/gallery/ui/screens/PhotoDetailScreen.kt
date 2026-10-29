@@ -16,7 +16,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
@@ -130,6 +134,7 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
     val density = LocalDensity.current
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
     var landscape by remember { mutableStateOf(false) }
+    val overlayAlpha by animateFloatAsState(if (overlay) 1f else 0f, tween(if (overlay) 150 else 200), label = "overlay_alpha")
     ForcedLandscape(landscape)
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -156,7 +161,7 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
         }
 
         // Scrims keep the white controls readable on bright photos without boxing them in.
-        AnimatedVisibility(overlay, enter = fadeIn(tween(150)), exit = fadeOut(tween(200)), modifier = Modifier.align(Alignment.TopCenter)) {
+        FadingOverlay(overlay, { overlayAlpha }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.TopCenter)) {
             TopBar(
                 item = current,
                 landscape = landscape,
@@ -167,13 +172,14 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
                 modifier = Modifier.background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
             )
         }
-        AnimatedVisibility(overlay, enter = fadeIn(tween(150)), exit = fadeOut(tween(200)), modifier = Modifier.align(Alignment.BottomCenter)) {
+        FadingOverlay(overlay, { overlayAlpha }, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
+            // Photos fade into the bar. For videos only the action row gets a backing: a scrim
+            // over the controls area sat on top of the filmstrip and darkened its frames.
             Column(
-                Modifier.background(
-                    Brush.verticalGradient(0f to Color.Transparent, 0.35f to Color.Black.copy(alpha = 0.45f), 1f to Color.Black.copy(alpha = 0.7f)),
-                ),
+                if (current.isVideo) Modifier
+                else Modifier.background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f)))),
             ) {
-                // Room for the video controls and filmstrip, which the player draws on top of this.
+                // Room for the video controls and filmstrip, which the player draws itself.
                 Spacer(Modifier.height(if (current.isVideo) VIDEO_CONTROLS_HEIGHT else 24.dp))
                 BottomBar(
                     isFavorite = current.id in settings.favoriteIds,
@@ -181,7 +187,9 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
                     onDetails = { showInfo = true },
                     onShare = { shareItems(context, listOf(current)) },
                     onDelete = { confirmTrash = true },
-                    modifier = Modifier.onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
+                    modifier = Modifier
+                        .let { if (current.isVideo) it.background(Color.Black.copy(alpha = 0.6f)) else it }
+                        .onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
                 )
             }
         }
@@ -207,7 +215,26 @@ fun PhotoDetailScreen(viewModel: GalleryViewModel, initialId: Long, source: Medi
 private val dayFormat = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
 private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
-private val VIDEO_CONTROLS_HEIGHT = 136.dp
+private val VIDEO_CONTROLS_HEIGHT = 120.dp
+
+/**
+ * Bars that stay composed and only fade. Composing them on every tap (as AnimatedVisibility
+ * does) cost a long frame each time, a stutter in a playing video. While hidden, a tap on
+ * the bar's area reveals the bars instead of pressing an invisible button.
+ */
+@Composable
+private fun FadingOverlay(
+    visible: Boolean,
+    alpha: () -> Float,
+    onReveal: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(modifier.graphicsLayer { this.alpha = alpha() }) {
+        content()
+        if (!visible) Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { onReveal() } })
+    }
+}
 
 /** Samsung Gallery style: back on the left; rotate (videos) and the overflow menu on the right. */
 @Composable
