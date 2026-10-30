@@ -293,7 +293,8 @@ fun PhotoDetailScreen(
         HorizontalPager(
             state = pager,
             key = { items[it].id },
-            beyondViewportPageCount = 1,
+            // Two: a page leaving the neighbours stays composed until its player has been let go.
+            beyondViewportPageCount = 2,
             userScrollEnabled = !inPip,
             modifier = Modifier
                 .fillMaxSize()
@@ -313,12 +314,20 @@ fun PhotoDetailScreen(
             val item = items[page]
             val isCurrent = page == pager.currentPage
             if (item.isVideo) {
+                val isVisible by remember(page) {
+                    derivedStateOf { page == pager.settledPage || pager.layoutInfo.visiblePagesInfo.any { it.index == page } }
+                }
                 VideoPlayer(
                     item = item,
                     // Once the page has come to rest, not halfway through the swipe as currentPage
-                    // does: releasing one player and building the next stalled the motion ~100 ms.
+                    // does: handing over the controls then cost frames of the motion.
                     isCurrentPage = page == pager.settledPage,
-                    leaving = closing || page != pager.currentPage,
+                    isNearby = abs(page - pager.settledPage) <= 1,
+                    // The page ahead first: that's the likely next swipe.
+                    preloadDelayMs = if (page > pager.settledPage) 400L else 700L,
+                    isVisible = isVisible,
+                    isAudible = page == pager.currentPage,
+                    leaving = closing,
                     rememberPosition = settings.rememberVideoPosition,
                     loop = settings.videoLoop,
                     onLoopChange = viewModel.settingsRepo::setVideoLoop,

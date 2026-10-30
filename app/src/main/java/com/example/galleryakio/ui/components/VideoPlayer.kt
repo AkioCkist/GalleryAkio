@@ -106,7 +106,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.example.galleryakio.GalleryApplication
 import com.example.galleryakio.data.MediaItem
-import com.example.galleryakio.data.MediaThumb
+import coil3.video.videoFrameMillis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -135,6 +135,9 @@ object VideoPositions {
 }
 
 private const val AUTO_HIDE_MS = 3_000L
+/** A player no longer next to the page at rest is released this long after being stopped. */
+private const val UNLOAD_DELAY_MS = 400L
+private val VIDEO_AUDIO = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build()
 /** Android refuses a PiP window outside these proportions. */
 private const val PIP_MIN_ASPECT = 0.42f
 private const val PIP_MAX_ASPECT = 2.39f
@@ -233,8 +236,16 @@ private class ScrubPreviews {
 @Composable
 fun VideoPlayer(
     item: MediaItem,
+    /** The page at rest: it alone has the controls. */
     isCurrentPage: Boolean,
-    /** The viewer is closing or a swipe is past halfway to another page. */
+    /** Next to the page at rest: holds a player ready, after [preloadDelayMs]. */
+    isNearby: Boolean,
+    preloadDelayMs: Long,
+    /** Any of it is on screen, so it plays. A page swiped in plays from the first pixel. */
+    isVisible: Boolean,
+    /** It has the sound: the page a swipe is more than halfway to. */
+    isAudible: Boolean,
+    /** The viewer is closing. */
     leaving: Boolean,
     rememberPosition: Boolean,
     loop: Boolean,
@@ -246,28 +257,47 @@ fun VideoPlayer(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val still = remember(item.uri) {
+    // The picture playback starts on, not the thumbnail: MediaStore's is a frame from somewhere
+    // inside the video, which showed for a moment before the video jumped to its start.
+    // The grid's thumbnail only stands in until this has decoded, which the page next to the
+    // current one has done before it is swiped to.
+    val still = remember(item.uri, rememberPosition) {
         ImageRequest.Builder(context)
-            .data(MediaThumb(item.uri, 1024))
+            .data(item.uri)
+            .videoFrameMillis(if (rememberPosition) VideoPositions.get(context, item.id) else 0L)
             .placeholderMemoryCacheKey(cachedThumbnailKey(context, item.id))
             .build()
     }
-    // Pages next to the current one only show a still: building (and later releasing) a
-    // player for them cost a decoder each and stalled swiping and leaving the viewer.
-    if (!isCurrentPage) {
+    // The pages either side keep a player paused on its first picture, so a swipe shows video
+    // rather than a still. It is built a moment after the page next to it has come to rest, and
+    // dropped a moment after it stops being next to it (stopped first, see below): done at the
+    // moment of the swipe, building and releasing players stalled it.
+    var loaded by remember(item.id) { mutableStateOf(isCurrentPage) }
+    LaunchedEffect(isCurrentPage, isNearby) {
+        when {
+            isCurrentPage -> loaded = true
+            isNearby -> {
+                delay(preloadDelayMs)
+                loaded = true
+            }
+            loaded -> {
+                delay(UNLOAD_DELAY_MS)
+                loaded = false
+            }
+        }
+    }
+    if (!isCurrentPage && !loaded) {
         AsyncImage(still, item.displayName, contentScale = ContentScale.Fit, modifier = modifier.fillMaxSize())
         return
     }
 
     val scope = rememberCoroutineScope()
+    val active by rememberUpdatedState(isCurrentPage)
     val player = remember(item.id) {
         ExoPlayer.Builder(context)
             // Playing on with the app away, it has to yield to calls and other players by itself,
             // stop when headphones come out, and keep the CPU awake with the screen off.
-            .setAudioAttributes(
-                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
-                true,
-            )
+            .setAudioAttributes(VIDEO_AUDIO, isAudible)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build().apply {
@@ -279,12 +309,12 @@ fun VideoPlayer(
             )
             repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (rememberPosition) seekTo(VideoPositions.get(context, item.id))
-            playWhenReady = true
+            playWhenReady = isVisible
             prepare()
         }
     }
     val textureView = remember { arrayOfNulls<TextureView>(1) }
-    var isPlaying by remember { mutableStateOf(true) }
+    var isPlaying by remember { mutableStateOf(isVisible) }
     var ended by remember { mutableStateOf(false) }
     var muted by remember { mutableStateOf(false) }
     var firstFrame by remember { mutableStateOf(false) }
@@ -323,7 +353,8 @@ fun VideoPlayer(
         val frames = VideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
             shownUs.set(presentationTimeUs)
             val bucket = presentationTimeUs / 1000 / PREVIEW_STEP_MS
-            if (presentationTimeUs >= 0 && previews.claim(bucket)) {
+            // Not for a page on its way in: the read-back would cost frames of the swipe.
+            if (active && presentationTimeUs >= 0 && previews.claim(bucket)) {
                 val untilShown = ((releaseTimeNs - System.nanoTime()) / 1_000_000).coerceIn(0, 100)
                 main.postDelayed({ capturePreview(bucket) }, untilShown + 8)
             }
@@ -346,7 +377,7 @@ fun VideoPlayer(
                 ended = state == Player.STATE_ENDED
                 if (player.duration > 0) duration = player.duration
                 // Finished: bring the controls back so replay is in reach.
-                if (ended) onControlsChange(true)
+                if (ended && active) onControlsChange(true)
             }
 
             override fun onVideoSizeChanged(size: VideoSize) {
@@ -370,6 +401,29 @@ fun VideoPlayer(
 
     LaunchedEffect(player, loop) {
         player.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+
+    // Plays from the moment it shows. Off screen it goes back to where it starts, so the next
+    // swipe here finds that picture, as opening it afresh would.
+    LaunchedEffect(player, isVisible) {
+        if (isVisible) {
+            // Three players can run out of decoders on some videos: try again now it matters.
+            if (player.playerError != null) player.prepare()
+            player.play()
+        } else {
+            player.pause()
+            if (rememberPosition) VideoPositions.put(context, item.id, player.currentPosition, player.duration)
+            val start = if (rememberPosition) VideoPositions.get(context, item.id) else 0L
+            if (player.currentPosition != start) player.seekTo(start)
+        }
+    }
+    // One player holds the sound and audio focus: a second asking for focus would pause the first.
+    LaunchedEffect(player, isAudible, muted) {
+        player.setAudioAttributes(VIDEO_AUDIO, isAudible)
+        player.volume = if (isAudible && !muted) 1f else 0f
+    }
+    LaunchedEffect(isCurrentPage) {
+        if (!isCurrentPage) scrubbing = false
     }
 
     // Built on first need, since it isn't free and most videos are just watched in the viewer.
@@ -426,8 +480,9 @@ fun VideoPlayer(
 
     // Going home flies a playing video into PiP: Android 12 does it from these params, older
     // versions need asking as the user leaves.
-    val autoPip = canPip && activity != null && leaveAction == VideoLeaveAction.PICTURE_IN_PICTURE && isPlaying
-    DisposableEffect(autoPip, aspect) {
+    val autoPip = isCurrentPage && canPip && activity != null && leaveAction == VideoLeaveAction.PICTURE_IN_PICTURE && isPlaying
+    DisposableEffect(autoPip, aspect, isCurrentPage) {
+        if (!isCurrentPage) return@DisposableEffect onDispose { }
         if (autoPip) ensureSession()
         if (Build.VERSION.SDK_INT >= 31 && canPip && activity != null) activity.setPictureInPictureParams(pipParams(autoPip))
         val onLeave = Runnable { if (autoPip && Build.VERSION.SDK_INT < 31) enterPip() }
@@ -452,7 +507,7 @@ fun VideoPlayer(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE ->
-                    if (leave == VideoLeaveAction.KEEP_PLAYING && player.isPlaying && !enteringPip[0] && activity?.isInPictureInPictureMode != true) {
+                    if (active && leave == VideoLeaveAction.KEEP_PLAYING && player.isPlaying && !enteringPip[0] && activity?.isInPictureInPictureMode != true) {
                         ensureSession()
                         VideoPlaybackService.session = session[0]
                         VideoPlaybackService.start(context)
@@ -479,8 +534,9 @@ fun VideoPlayer(
     // end made taking the surface away and release() block the main thread together for some
     // 70 ms, a visible hitch just as the grid or the next video came in.
     // A back gesture or a swipe can still be cancelled, hence the way back.
-    LaunchedEffect(player, leaving) {
-        if (leaving) player.stop()
+    val stopped = leaving || !isNearby
+    LaunchedEffect(player, stopped) {
+        if (stopped) player.stop()
         else if (player.playbackState == Player.STATE_IDLE) player.prepare()
     }
 
@@ -488,8 +544,8 @@ fun VideoPlayer(
     // scroll offset moves each frame (a re-placement, no recomposition); the clock state is
     // written once per second. Writing it every frame recomposed the whole player 60-120
     // times a second and visibly dropped video frames while the controls were up.
-    LaunchedEffect(player, controlsVisible, scrubbing) {
-        if (!controlsVisible || scrubbing) return@LaunchedEffect
+    LaunchedEffect(player, controlsVisible, scrubbing, isCurrentPage) {
+        if (!isCurrentPage || !controlsVisible || scrubbing) return@LaunchedEffect
         while (isActive) {
             val now = player.currentPosition
             if (now / 1000 != position / 1000) position = now
@@ -554,7 +610,8 @@ fun VideoPlayer(
     }
     // While the picture moves under the controls. Left in place as they fade out, when the
     // backdrop stops being recorded anyway; a stopped picture costs nothing live, and looks sharper.
-    LaunchedEffect(player, controlsVisible, isPlaying, scrubbing) {
+    LaunchedEffect(player, controlsVisible, isPlaying, scrubbing, isCurrentPage) {
+        if (!isCurrentPage) return@LaunchedEffect
         if (!isPlaying && !scrubbing) {
             controlsHost.backdropStill = null
             return@LaunchedEffect
@@ -565,12 +622,12 @@ fun VideoPlayer(
             delay(GLASS_REFRESH_MS)
         }
     }
-    DisposableEffect(player, controlsHost) {
-        onDispose { controlsHost.backdropStill = null }
+    DisposableEffect(player, controlsHost, isCurrentPage) {
+        onDispose { if (isCurrentPage) controlsHost.backdropStill = null }
     }
     // Like every video app: the controls fade out once playback runs on its own.
-    LaunchedEffect(controlsVisible, isPlaying, scrubbing) {
-        if (controlsVisible && isPlaying && !scrubbing) {
+    LaunchedEffect(controlsVisible, isPlaying, scrubbing, isCurrentPage) {
+        if (isCurrentPage && controlsVisible && isPlaying && !scrubbing) {
             delay(AUTO_HIDE_MS)
             onControlsChange(false)
         }
@@ -578,7 +635,7 @@ fun VideoPlayer(
 
     // Loaded here, not inside the controls: those leave composition each time they hide,
     // which threw the frames away and made every reappearance load them again.
-    val frames = rememberFilmstripFrames(item, duration)
+    val frames = rememberFilmstripFrames(item, duration, load = isCurrentPage)
 
     fun togglePlay() {
         when {
@@ -647,21 +704,20 @@ fun VideoPlayer(
                         visible,
                     ) {
                         muted = !muted
-                        player.volume = if (muted) 0f else 1f
                     }
                 }
                 Filmstrip(frames, strip, enabled = visible, onScrub = { scrubbing = it })
             }
         }
     }
-    DisposableEffect(controlsHost, controls) {
-        controlsHost.content = controls
+    DisposableEffect(controlsHost, controls, isCurrentPage) {
+        if (isCurrentPage) controlsHost.content = controls
         onDispose { if (controlsHost.content === controls) controlsHost.content = null }
     }
 
     ZoomBox(
         resetKey = item.id,
-        isCurrentPage = true,
+        isCurrentPage = isCurrentPage,
         onTap = { onControlsChange(!controlsVisible) },
         modifier = modifier,
         onDoubleTap = {
@@ -754,7 +810,7 @@ private val stripCache = LruCache<Long, SnapshotStateList<ImageBitmap?>>(4)
  * Fills in as they decode; a load cut short (the user left) resumes with the missing ones.
  */
 @Composable
-private fun rememberFilmstripFrames(item: MediaItem, duration: Long): List<ImageBitmap?> {
+private fun rememberFilmstripFrames(item: MediaItem, duration: Long, load: Boolean): List<ImageBitmap?> {
     val context = LocalContext.current
     val count = ((duration / 2000).toInt()).coerceIn(8, 60)
     val frames = remember(item.id, count) {
@@ -762,8 +818,8 @@ private fun rememberFilmstripFrames(item: MediaItem, duration: Long): List<Image
             ?: mutableStateListOf<ImageBitmap?>().apply { repeat(count) { add(null) } }.also { stripCache.put(item.id, it) }
     }
     val heightPx = with(LocalDensity.current) { STRIP_HEIGHT.roundToPx() }
-    LaunchedEffect(frames, duration > 0) {
-        if (duration <= 0 || frames.none { it == null }) return@LaunchedEffect
+    LaunchedEffect(frames, duration > 0, load) {
+        if (!load || duration <= 0 || frames.none { it == null }) return@LaunchedEffect
         withContext(Dispatchers.IO) {
             val retriever = MediaMetadataRetriever()
             try {
