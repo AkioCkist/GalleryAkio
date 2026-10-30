@@ -6,7 +6,10 @@ import android.content.pm.ActivityInfo
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.automirrored.rounded.ExitToApp
 import com.example.galleryakio.data.DetailSection
+import com.example.galleryakio.data.VideoLeaveAction
+import com.example.galleryakio.ui.components.rememberInPictureInPicture
 import com.example.galleryakio.data.canReadMediaLocation
 import com.example.galleryakio.data.readMediaDetails
 import androidx.compose.material.icons.rounded.Favorite
@@ -210,6 +213,7 @@ fun PhotoDetailScreen(
     ) { if (it == EnterExitState.Visible) 1f else 0f }
     val progress = { progressState?.value ?: 1f }
     val closing = transition?.targetState == EnterExitState.PostExit
+    val inPip by rememberInPictureInPicture()
     val opened = transition == null || transition.currentState == EnterExitState.Visible
     // The grid's thumbnail is what moves; without one in memory the viewer just fades.
     val thumb = remember(current.id) { SingletonImageLoader.get(context).memoryCache?.let { cachedThumbnail(it, current.id, 1024) } }
@@ -270,11 +274,12 @@ fun PhotoDetailScreen(
     ) {
         // What the glass controls blur, recorded only while they show: a hidden HUD over a
         // playing video then costs nothing per frame.
-        if (pagerReady) BackdropSource(backdrop, enabled = { barsOn && !closing }, modifier = Modifier.fillMaxSize()) {
+        if (pagerReady) BackdropSource(backdrop, enabled = { barsOn && !closing && !inPip }, modifier = Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pager,
             key = { items[it].id },
             beyondViewportPageCount = 1,
+            userScrollEnabled = !inPip,
             modifier = Modifier
                 .fillMaxSize()
                 .then(dismissGesture)
@@ -298,6 +303,9 @@ fun PhotoDetailScreen(
                     isCurrentPage = isCurrent,
                     closing = closing,
                     rememberPosition = settings.rememberVideoPosition,
+                    loop = settings.videoLoop,
+                    onLoopChange = viewModel.settingsRepo::setVideoLoop,
+                    leaveAction = settings.videoLeaveAction,
                     controlsVisible = overlay,
                     onControlsChange = { overlay = it },
                     controlsHost = videoControls,
@@ -324,7 +332,7 @@ fun PhotoDetailScreen(
         // The bars get out of the way as soon as a swipe down starts, and at once on closing:
         // fading along with the close, their glass took 40-65 ms of every frame of the motion.
         val barsAlpha = {
-            if (closing) 0f else overlayAlpha.value * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f))
+            if (closing || inPip) 0f else overlayAlpha.value * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f))
         }
 
         // Floating liquid-glass controls, matching the video player's: the photo shows through
@@ -334,6 +342,8 @@ fun PhotoDetailScreen(
                 backdrop = backdrop,
                 item = current,
                 landscape = landscape,
+                leaveAction = settings.videoLeaveAction,
+                onLeaveActionChange = viewModel.settingsRepo::setVideoLeaveAction,
                 onBack = onBack,
                 onRotate = { landscape = !landscape },
                 onDetails = { showInfo = true },
@@ -474,6 +484,8 @@ private fun TopBar(
     backdrop: Backdrop,
     item: MediaItem,
     landscape: Boolean,
+    leaveAction: VideoLeaveAction,
+    onLeaveActionChange: (VideoLeaveAction) -> Unit,
     onBack: () -> Unit,
     onRotate: () -> Unit,
     onDetails: () -> Unit,
@@ -519,6 +531,13 @@ private fun TopBar(
             GlassButton(backdrop, painterResource(R.drawable.more2), "More") { menu = true }
             GlassMenu(expanded = menu, onDismiss = { menu = false }) {
                 MoreItem(R.drawable.info, "DETAILS") { menu = false; onDetails() }
+                if (item.isVideo) {
+                    // Stays open on a tap: it steps through the choices and shows the one picked.
+                    GlassMenuItem(rememberVectorPainter(Icons.AutoMirrored.Rounded.ExitToApp), "WHEN LEAVING", leaveAction.label) {
+                        val all = VideoLeaveAction.entries
+                        onLeaveActionChange(all[(leaveAction.ordinal + 1) % all.size])
+                    }
+                }
                 if (!item.isVideo) {
                     MoreItem(R.drawable.wallpaper, "SET WALLPAPER") {
                         menu = false

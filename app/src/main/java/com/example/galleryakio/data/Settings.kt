@@ -26,12 +26,21 @@ data class GallerySettings(
     val appProtection: Boolean = false,
     val maxBrightnessViewing: Boolean = false,
     val rememberVideoPosition: Boolean = false,
+    val videoLoop: Boolean = false,
+    val videoLeaveAction: VideoLeaveAction = VideoLeaveAction.PAUSE,
     val ai: AiSettings = AiSettings(),
     val gridStyle: GridStyle = GridStyle.NOTHING,
     val gridSpacing: GridSpacing = GridSpacing.AUTO,
     val showDateHeaders: Boolean = true,
     val showVideoDuration: Boolean = true,
 )
+
+/** What a playing video does when the user leaves the app. */
+enum class VideoLeaveAction(val label: String) {
+    PAUSE("Pause"),
+    KEEP_PLAYING("Keep playing"),
+    PICTURE_IN_PICTURE("Picture in picture"),
+}
 
 /** On-device AI search. Each part can be switched off to save battery and time. */
 data class AiSettings(
@@ -75,6 +84,8 @@ class SettingsRepository(context: Context) {
         appProtection = prefs.getBoolean(KEY_APP_PROTECTION, false),
         maxBrightnessViewing = prefs.getBoolean(KEY_MAX_BRIGHTNESS, false),
         rememberVideoPosition = prefs.getBoolean(KEY_REMEMBER_VIDEO_POSITION, false),
+        videoLoop = prefs.getBoolean(KEY_VIDEO_LOOP, false),
+        videoLeaveAction = runCatching { VideoLeaveAction.valueOf(prefs.getString(KEY_VIDEO_LEAVE_ACTION, null)!!) }.getOrDefault(VideoLeaveAction.PAUSE),
         ai = AiSettings(
             enabled = prefs.getBoolean(KEY_AI_ENABLED, true),
             faces = prefs.getBoolean(KEY_AI_FACES, true),
@@ -127,6 +138,9 @@ class SettingsRepository(context: Context) {
         change({ it.copy(maxBrightnessViewing = on) }) { putBoolean(KEY_MAX_BRIGHTNESS, on) }
     fun setRememberVideoPosition(on: Boolean) =
         change({ it.copy(rememberVideoPosition = on) }) { putBoolean(KEY_REMEMBER_VIDEO_POSITION, on) }
+    fun setVideoLoop(on: Boolean) = change({ it.copy(videoLoop = on) }) { putBoolean(KEY_VIDEO_LOOP, on) }
+    fun setVideoLeaveAction(action: VideoLeaveAction) =
+        change({ it.copy(videoLeaveAction = action) }) { putString(KEY_VIDEO_LEAVE_ACTION, action.name) }
 
     fun togglePinned(relativePath: String) = change({
         val pinned = if (relativePath in it.pinnedAlbums) it.pinnedAlbums - relativePath else it.pinnedAlbums + relativePath
@@ -173,6 +187,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_APP_PROTECTION = "app_protection"
         private const val KEY_MAX_BRIGHTNESS = "max_brightness_viewing"
         private const val KEY_REMEMBER_VIDEO_POSITION = "remember_video_position"
+        private const val KEY_VIDEO_LOOP = "video_loop"
+        private const val KEY_VIDEO_LEAVE_ACTION = "video_leave_action"
         private const val KEY_GRID_STYLE = "grid_style"
         private const val KEY_GRID_SPACING = "grid_spacing"
         private const val KEY_DATE_HEADERS = "show_date_headers"

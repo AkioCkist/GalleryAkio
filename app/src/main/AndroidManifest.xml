@@ -12,6 +12,9 @@
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:name=".GalleryApplication"
@@ -31,6 +34,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -44,6 +48,15 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".VideoPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

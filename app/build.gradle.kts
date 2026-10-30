@@ -61,6 +61,7 @@ dependencies {
     implementation(libs.coil.video)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
+    implementation(libs.media3.session)
     // On-device search: labels, faces and text, all with bundled models (works offline).
     implementation(libs.mlkit.image.labeling)
     implementation(libs.mlkit.face.detection)

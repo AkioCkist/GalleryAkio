@@ -1,15 +1,37 @@
 package com.example.galleryakio.ui.components
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
+import android.util.Rational
 import android.view.TextureView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.annotation.OptIn
+import androidx.annotation.RequiresApi
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.runtime.State
+import androidx.core.app.PictureInPictureModeChangedInfo
+import androidx.core.util.Consumer
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.MediaSession
+import com.example.galleryakio.VideoPlaybackService
+import com.example.galleryakio.data.VideoLeaveAction
 import com.kyant.backdrop.Backdrop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
@@ -113,6 +135,9 @@ object VideoPositions {
 }
 
 private const val AUTO_HIDE_MS = 3_000L
+/** Android refuses a PiP window outside these proportions. */
+private const val PIP_MIN_ASPECT = 0.42f
+private const val PIP_MAX_ASPECT = 2.39f
 /** A scrub seek counts as shown once a picture this close to its target is rendered. */
 private const val SEEK_ARRIVED_MS = 100L
 /**
@@ -202,6 +227,9 @@ fun VideoPlayer(
     isCurrentPage: Boolean,
     closing: Boolean,
     rememberPosition: Boolean,
+    loop: Boolean,
+    onLoopChange: (Boolean) -> Unit,
+    leaveAction: VideoLeaveAction,
     controlsVisible: Boolean,
     onControlsChange: (Boolean) -> Unit,
     controlsHost: VideoControlsHost,
@@ -223,9 +251,23 @@ fun VideoPlayer(
 
     val scope = rememberCoroutineScope()
     val player = remember(item.id) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(ExoMediaItem.fromUri(item.uri))
-            repeatMode = Player.REPEAT_MODE_OFF
+        ExoPlayer.Builder(context)
+            // Playing on with the app away, it has to yield to calls and other players by itself,
+            // stop when headphones come out, and keep the CPU awake with the screen off.
+            .setAudioAttributes(
+                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
+                true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
+            .build().apply {
+            setMediaItem(
+                ExoMediaItem.Builder()
+                    .setUri(item.uri)
+                    .setMediaMetadata(MediaMetadata.Builder().setTitle(item.displayName).build())
+                    .build(),
+            )
+            repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (rememberPosition) seekTo(VideoPositions.get(context, item.id))
             playWhenReady = true
             prepare()
@@ -314,6 +356,113 @@ fun VideoPlayer(
             if (rememberPosition) VideoPositions.put(context, item.id, player.currentPosition, player.duration)
             player.release()
         }
+    }
+
+    LaunchedEffect(player, loop) {
+        player.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+
+    // Built on first need, since it isn't free and most videos are just watched in the viewer.
+    // Declared after the player's effect, so it goes first: a session must not outlive its player.
+    val session = remember(player) { arrayOfNulls<MediaSession>(1) }
+    fun ensureSession() {
+        if (session[0] != null) return
+        val back = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
+        session[0] = MediaSession.Builder(context, player)
+            .setId("video-${item.id}")
+            .setSessionActivity(PendingIntent.getActivity(context, 0, back, PendingIntent.FLAG_IMMUTABLE))
+            .build()
+    }
+    DisposableEffect(player) {
+        onDispose {
+            session[0]?.let { current ->
+                if (VideoPlaybackService.session === current) {
+                    VideoPlaybackService.stop(context)
+                    VideoPlaybackService.session = null
+                }
+                current.release()
+            }
+        }
+    }
+
+    val activity = context as? ComponentActivity
+    val canPip = remember {
+        Build.VERSION.SDK_INT >= 26 && context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    }
+    // Set by the PiP button, whose own ON_PAUSE isn't the user leaving.
+    val enteringPip = remember(player) { booleanArrayOf(false) }
+
+    @RequiresApi(26)
+    fun pipParams(auto: Boolean): PictureInPictureParams {
+        val ratio = aspect.coerceIn(PIP_MIN_ASPECT, PIP_MAX_ASPECT)
+        return PictureInPictureParams.Builder()
+            .setAspectRatio(Rational((ratio * 1000).toInt(), 1000))
+            .apply {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    setAutoEnterEnabled(auto)
+                    setSeamlessResizeEnabled(false)
+                }
+            }
+            .build()
+    }
+
+    fun enterPip() {
+        if (Build.VERSION.SDK_INT < 26 || activity == null) return
+        // The system's PiP window takes its play / pause buttons from the session.
+        ensureSession()
+        enteringPip[0] = true
+        if (!runCatching { activity.enterPictureInPictureMode(pipParams(auto = false)) }.getOrDefault(false)) enteringPip[0] = false
+    }
+
+    // Going home flies a playing video into PiP: Android 12 does it from these params, older
+    // versions need asking as the user leaves.
+    val autoPip = canPip && activity != null && leaveAction == VideoLeaveAction.PICTURE_IN_PICTURE && isPlaying
+    DisposableEffect(autoPip, aspect) {
+        if (autoPip) ensureSession()
+        if (Build.VERSION.SDK_INT >= 31 && canPip && activity != null) activity.setPictureInPictureParams(pipParams(autoPip))
+        val onLeave = Runnable { if (autoPip && Build.VERSION.SDK_INT < 31) enterPip() }
+        activity?.addOnUserLeaveHintListener(onLeave)
+        onDispose {
+            activity?.removeOnUserLeaveHintListener(onLeave)
+            if (Build.VERSION.SDK_INT >= 31 && canPip && activity != null) activity.setPictureInPictureParams(pipParams(false))
+        }
+    }
+
+    // Leaving the app. The service has to start while the app is still in front, hence ON_PAUSE;
+    // the rest waits for ON_STOP, which a PiP window doesn't reach until it is closed.
+    val leave by rememberUpdatedState(leaveAction)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(player, lifecycleOwner) {
+        var inBackground = false
+        fun videoTrack(on: Boolean) {
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !on)
+                .build()
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE ->
+                    if (leave == VideoLeaveAction.KEEP_PLAYING && player.isPlaying && !enteringPip[0] && activity?.isInPictureInPictureMode != true) {
+                        ensureSession()
+                        VideoPlaybackService.session = session[0]
+                        VideoPlaybackService.start(context)
+                        inBackground = true
+                    }
+                // Sound only while nothing can show the picture: no decoding it for nobody.
+                Lifecycle.Event.ON_STOP -> if (inBackground) videoTrack(false) else player.pause()
+                Lifecycle.Event.ON_START -> if (inBackground) videoTrack(true)
+                Lifecycle.Event.ON_RESUME -> {
+                    enteringPip[0] = false
+                    if (inBackground) {
+                        inBackground = false
+                        VideoPlaybackService.stop(context)
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // Leaving: drop the decoder now, on the playback thread, while the thumbnail flies back.
@@ -428,6 +577,8 @@ fun VideoPlayer(
     // Remembered once and read through state, so handing it over doesn't recompose the
     // viewer's overlay on every recomposition of the player.
     val visible by rememberUpdatedState(controlsVisible)
+    val looping by rememberUpdatedState(loop)
+    val setLoop by rememberUpdatedState(onLoopChange)
     val controls: @Composable (Backdrop) -> Unit = remember(player) {
         { backdrop ->
             Column(Modifier.fillMaxWidth()) {
@@ -436,6 +587,14 @@ fun VideoPlayer(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CircleButton(backdrop, Icons.Outlined.PhotoCamera, "Capture frame", visible, onClick = ::captureFrame)
+                    Spacer(Modifier.width(8.dp))
+                    CircleButton(
+                        backdrop,
+                        if (looping) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                        if (looping) "Stop looping" else "Loop video",
+                        visible,
+                        tint = if (looping) Color.White else Color.White.copy(alpha = 0.55f),
+                    ) { setLoop(!looping) }
                     Spacer(Modifier.weight(1f))
                     PlayPill(
                         backdrop = backdrop,
@@ -451,6 +610,10 @@ fun VideoPlayer(
                         onClick = ::togglePlay,
                     )
                     Spacer(Modifier.weight(1f))
+                    if (canPip && activity != null) {
+                        CircleButton(backdrop, Icons.Rounded.PictureInPictureAlt, "Picture in picture", visible, onClick = ::enterPip)
+                        Spacer(Modifier.width(8.dp))
+                    }
                     CircleButton(
                         backdrop,
                         if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
@@ -497,7 +660,14 @@ fun VideoPlayer(
 }
 
 @Composable
-private fun CircleButton(backdrop: Backdrop, icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
+private fun CircleButton(
+    backdrop: Backdrop,
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean,
+    tint: Color = Color.White,
+    onClick: () -> Unit,
+) {
     Box(
         Modifier
             .size(CONTROL_SIZE)
@@ -505,8 +675,21 @@ private fun CircleButton(backdrop: Backdrop, icon: ImageVector, description: Str
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, description, tint = Color.White, modifier = Modifier.size(18.dp))
+        Icon(icon, description, tint = tint, modifier = Modifier.size(18.dp))
     }
+}
+
+/** Whether the activity is in a picture-in-picture window, where the viewer shows only the video. */
+@Composable
+fun rememberInPictureInPicture(): State<Boolean> {
+    val activity = LocalContext.current as? ComponentActivity
+    val inPip = remember { mutableStateOf(activity?.isInPictureInPictureMode == true) }
+    DisposableEffect(activity) {
+        val listener = Consumer<PictureInPictureModeChangedInfo> { inPip.value = it.isInPictureInPictureMode }
+        activity?.addOnPictureInPictureModeChangedListener(listener)
+        onDispose { activity?.removeOnPictureInPictureModeChangedListener(listener) }
+    }
+    return inPip
 }
 
 @Composable
