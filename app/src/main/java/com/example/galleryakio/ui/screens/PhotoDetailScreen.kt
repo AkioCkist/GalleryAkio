@@ -1,7 +1,14 @@
 package com.example.galleryakio.ui.screens
 
+import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.galleryakio.data.DetailSection
+import com.example.galleryakio.data.canReadMediaLocation
+import com.example.galleryakio.data.readMediaDetails
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.ScreenRotation
@@ -122,7 +129,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.galleryakio.R
 import com.example.galleryakio.data.MediaItem
@@ -264,7 +270,7 @@ fun PhotoDetailScreen(
     ) {
         // What the glass controls blur, recorded only while they show: a hidden HUD over a
         // playing video then costs nothing per frame.
-        if (pagerReady) BackdropSource(backdrop, enabled = { barsOn }, modifier = Modifier.fillMaxSize()) {
+        if (pagerReady) BackdropSource(backdrop, enabled = { barsOn && !closing }, modifier = Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pager,
             key = { items[it].id },
@@ -290,6 +296,7 @@ fun PhotoDetailScreen(
                 VideoPlayer(
                     item = item,
                     isCurrentPage = isCurrent,
+                    closing = closing,
                     rememberPosition = settings.rememberVideoPosition,
                     controlsVisible = overlay,
                     onControlsChange = { overlay = it },
@@ -314,8 +321,11 @@ fun PhotoDetailScreen(
                 dragScale = dragScale,
             )
         }
-        // The bars get out of the way as soon as a swipe down starts.
-        val barsAlpha = { overlayAlpha.value * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f)) }
+        // The bars get out of the way as soon as a swipe down starts, and at once on closing:
+        // fading along with the close, their glass took 40-65 ms of every frame of the motion.
+        val barsAlpha = {
+            if (closing) 0f else overlayAlpha.value * progress() * (1f - (dragOffset.y / dismissDistance).coerceIn(0f, 1f))
+        }
 
         // Floating liquid-glass controls, matching the video player's: the photo shows through
         // them (blurred and bent at the edges), so no scrims are needed to keep them readable.
@@ -638,42 +648,22 @@ private fun Context.startChooserSafely(intent: Intent, title: String) {
     }
 }
 
-private data class ExifData(
-    val camera: String? = null,
-    val lens: String? = null,
-    val aperture: String? = null,
-    val exposure: String? = null,
-    val iso: String? = null,
-    val focalLength: String? = null,
-    val flash: String? = null,
-    val location: String? = null,
-)
-
-private fun readExif(context: Context, item: MediaItem): ExifData? = runCatching {
-    context.contentResolver.openInputStream(item.uri)?.use { stream ->
-        val exif = ExifInterface(stream)
-        val latLong = exif.latLong
-        ExifData(
-            camera = listOfNotNull(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL))
-                .joinToString(" ").ifBlank { null },
-            lens = exif.getAttribute(ExifInterface.TAG_LENS_MODEL),
-            aperture = exif.getAttributeDouble(ExifInterface.TAG_F_NUMBER, 0.0).takeIf { it > 0 }?.let { "f/%.1f".format(it) },
-            exposure = exif.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, 0.0).takeIf { it > 0 }?.let {
-                if (it < 1) "1/${(1 / it).toInt()} s" else "%.1f s".format(it)
-            },
-            iso = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)?.let { "ISO $it" },
-            focalLength = exif.getAttributeDouble(ExifInterface.TAG_FOCAL_LENGTH, 0.0).takeIf { it > 0 }?.let { "%.1f mm".format(it) },
-            flash = exif.getAttributeInt(ExifInterface.TAG_FLASH, -1).takeIf { it >= 0 }?.let { if (it and 1 == 1) "Fired" else "Off" },
-            location = latLong?.let { "%.5f, %.5f".format(it[0], it[1]) },
-        )
-    }
-}.getOrNull()
+/** Asked once per run, the first time details open: Android hides a file's GPS data without it. */
+private var askedMediaLocation = false
 
 @Composable
 private fun InfoSheet(item: MediaItem, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val exif by produceState<ExifData?>(null, item.id) {
-        value = if (item.isVideo) null else withContext(Dispatchers.IO) { readExif(context, item) }
+    var canLocate by remember { mutableStateOf(canReadMediaLocation(context)) }
+    val askLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { canLocate = it }
+    LaunchedEffect(Unit) {
+        if (!canLocate && !askedMediaLocation && Build.VERSION.SDK_INT >= 29) {
+            askedMediaLocation = true
+            askLocation.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        }
+    }
+    val details by produceState(emptyList<DetailSection>(), item.id, canLocate) {
+        value = withContext(Dispatchers.IO) { readMediaDetails(context, item) }
     }
     val dateFmt = remember { SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault()) }
     GlassSheet(onDismiss = onDismiss) {
@@ -689,13 +679,11 @@ private fun InfoSheet(item: MediaItem, onDismiss: () -> Unit) {
             item.duration?.let { InfoRow("Duration", formatDuration(it)) }
             InfoRow("Type", item.mimeType)
             InfoRow("Path", item.relativePath.ifEmpty { item.bucketName })
-            exif?.let { e ->
-                e.camera?.let { InfoRow("Camera", it) }
-                e.lens?.let { InfoRow("Lens", it) }
-                val shot = listOfNotNull(e.aperture, e.exposure, e.iso, e.focalLength).joinToString("  ·  ")
-                if (shot.isNotEmpty()) InfoRow("Settings", shot)
-                e.flash?.let { InfoRow("Flash", it) }
-                e.location?.let { InfoRow("Location", it) }
+            details.forEach { section ->
+                Spacer(Modifier.height(14.dp))
+                Text(section.title.uppercase(), fontFamily = CqMono, fontSize = 14.sp, color = LocalGlassContent.current)
+                Spacer(Modifier.height(4.dp))
+                section.rows.forEach { (label, value) -> InfoRow(label, value) }
             }
         }
     }

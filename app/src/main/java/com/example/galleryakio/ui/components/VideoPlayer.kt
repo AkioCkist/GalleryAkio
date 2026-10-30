@@ -200,6 +200,7 @@ private class ScrubPreviews {
 fun VideoPlayer(
     item: MediaItem,
     isCurrentPage: Boolean,
+    closing: Boolean,
     rememberPosition: Boolean,
     controlsVisible: Boolean,
     onControlsChange: (Boolean) -> Unit,
@@ -313,6 +314,15 @@ fun VideoPlayer(
             if (rememberPosition) VideoPositions.put(context, item.id, player.currentPosition, player.duration)
             player.release()
         }
+    }
+
+    // Leaving: drop the decoder now, on the playback thread, while the thumbnail flies back.
+    // Waiting for the end of the motion made taking the surface away and release() block the
+    // main thread together for some 70 ms, a visible hitch just as the grid came back.
+    // A back gesture can still be cancelled, hence the way back.
+    LaunchedEffect(player, closing) {
+        if (closing) player.stop()
+        else if (player.playbackState == Player.STATE_IDLE) player.prepare()
     }
 
     // While visible, the strip follows playback every frame, so the playhead glides. Only the
@@ -465,7 +475,11 @@ fun VideoPlayer(
         isCurrentPage = true,
         onTap = { onControlsChange(!controlsVisible) },
         modifier = modifier,
-        doubleTapZoom = false,
+        onDoubleTap = {
+            // Pausing brings the controls up, the only sign of it while they were hidden.
+            if (player.isPlaying) onControlsChange(true)
+            togglePlay()
+        },
     ) {
         Box(Modifier.aspectRatio(aspect)) {
             AndroidView(

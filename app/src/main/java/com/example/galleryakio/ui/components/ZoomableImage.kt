@@ -83,8 +83,7 @@ val LocalViewerZoom = staticCompositionLocalOf { ViewerZoom() }
 /**
  * Pinch / double-tap zoom for any content (photos and videos). Single-finger drags pass
  * through to the parent pager while not zoomed, so swiping between items keeps working.
- * Without [doubleTapZoom] (videos) only pinch zooms, and a tap reacts at once instead of
- * waiting out the double-tap timeout.
+ * With [onDoubleTap] (videos) a double tap does that instead and only pinch zooms.
  */
 @Composable
 fun ZoomBox(
@@ -92,10 +91,12 @@ fun ZoomBox(
     isCurrentPage: Boolean,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
-    doubleTapZoom: Boolean = true,
+    onDoubleTap: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
+    val doubleTap by rememberUpdatedState(onDoubleTap)
+    val doubleTapZooms = onDoubleTap == null
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -124,9 +125,9 @@ fun ZoomBox(
         modifier
             .fillMaxSize()
             .onSizeChanged { size = it }
-            .pointerInput(resetKey, doubleTapZoom) {
-                if (!doubleTapZoom) {
-                    detectTapGestures(onTap = { tap() })
+            .pointerInput(resetKey, doubleTapZooms) {
+                if (!doubleTapZooms) {
+                    detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap?.invoke() })
                     return@pointerInput
                 }
                 detectTapGestures(
