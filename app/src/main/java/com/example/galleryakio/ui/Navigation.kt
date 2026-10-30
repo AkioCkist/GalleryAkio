@@ -22,6 +22,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.example.galleryakio.editor.EditorScreen
 import com.example.galleryakio.ui.components.LocalGlassDark
+import com.example.galleryakio.ui.components.liquidGlass
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -153,6 +155,7 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
                     uri = item.uri,
                     displayName = item.displayName,
                     isVideo = item.isVideo,
+                    glass = { backdrop, shape -> liquidGlass(backdrop, darkMode = true, lensHeight = 6.dp, lensAmount = 12.dp, shape = shape) },
                     onClose = navController::popBackStack,
                     onSaved = {
                         Toast.makeText(context, if (item.isVideo) "Saved to Movies/Gallery" else "Saved to Pictures/Gallery", Toast.LENGTH_SHORT).show()

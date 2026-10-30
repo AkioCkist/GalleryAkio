@@ -12,6 +12,8 @@ import androidx.annotation.OptIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -26,7 +28,12 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.CropRotate
+import androidx.compose.material.icons.rounded.Workspaces
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Icon
@@ -34,6 +41,7 @@ import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -58,6 +67,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
@@ -71,12 +82,18 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 private const val TOOL_TRIM = 0
-private const val TOOL_ADJUST = 1
-private const val TOOL_PRESETS = 2
-private const val TOOL_CROP = 3
+private const val TOOL_CROP = 1
+private const val TOOL_FILTERS = 2
+private const val TOOL_TONE = 3
 private const val TOOL_SPEED = 4
-private val TOOLS = listOf("Trim", "Adjust", "Filters", "Crop", "Speed")
-private val VIDEO_PARAMS = Param.entries.filter { !it.imageOnly }
+private val TOOLS = listOf(
+    Icons.Rounded.ContentCut to "Trim",
+    Icons.Rounded.CropRotate to "Transform",
+    Icons.Rounded.Workspaces to "Filters",
+    Icons.Rounded.WbSunny to "Tone",
+    Icons.Rounded.Speed to "Speed",
+)
+private val TONE_PARAMS = Param.entries.filter { !it.imageOnly }
 private val SPEEDS = listOf(0.5f, 1f, 1.5f, 2f)
 private const val STRIP_FRAMES = 8
 private const val STRIP_HEIGHT_PX = 120
@@ -143,8 +160,8 @@ internal fun VideoEditor(uri: Uri, displayName: String, onClose: () -> Unit, onS
     }
     LaunchedEffect(edit.speed) { player.setPlaybackSpeed(edit.speed) }
     LaunchedEffect(edit.muted) { player.volume = if (edit.muted) 0f else 1f }
-    LaunchedEffect(edit.recipe.adjust) {
-        texture[0]?.setLayerPaint(Paint().apply { colorFilter = ColorMatrixColorFilter(edit.recipe.adjust.colorMatrix()) })
+    LaunchedEffect(edit.recipe.preset, edit.recipe.presetStrength, edit.recipe.adjust) {
+        texture[0]?.setLayerPaint(Paint().apply { colorFilter = ColorMatrixColorFilter(edit.recipe.colorMatrix()) })
     }
 
     val frames by produceState<List<Bitmap>>(emptyList(), uri) {
@@ -155,64 +172,106 @@ internal fun VideoEditor(uri: Uri, displayName: String, onClose: () -> Unit, onS
         value = withContext(Dispatchers.IO) { frameAt(context, uri, edit.startMs) }
     }
 
-    val close = discardGuard(edit != VideoEdit(), onClose)
-    Column(Modifier.fillMaxSize()) {
-        if (tool == TOOL_CROP) {
-            val picture = cropPicture?.let { remember(it, edit.recipe.turns, edit.recipe.flipped) { it.oriented(edit.recipe) } }
-            if (picture != null) {
-                CropPanel(
-                    picture = picture,
-                    onTurn = { history.commit(edit.copy(recipe = edit.recipe.turned().copy(crop = CropFraction()))) },
-                    onFlip = { history.commit(edit.copy(recipe = edit.recipe.flippedOver().copy(crop = CropFraction()))) },
-                    onApply = {
-                        history.commit(edit.copy(recipe = edit.recipe.copy(crop = it)))
-                        tool = TOOL_TRIM
-                    },
-                    onCancel = { tool = TOOL_TRIM },
-                )
-                return@Column
-            }
-        }
-        EditorTopBar(
-            canUndo = edit.let { history.canUndo },
-            canRedo = edit.let { history.canRedo },
-            onClose = close,
-            onUndo = history::undo,
-            onRedo = history::redo,
-            onSave = {
-                player.pause()
-                progress = 0f
-                exportJob = scope.launch {
-                    try {
-                        onSaved(exportVideo(context, uri, displayName, edit) { progress = it })
-                    } catch (error: Throwable) {
-                        if (error is CancellationException) throw error
-                        Toast.makeText(context, error.exportMessage(), Toast.LENGTH_LONG).show()
-                    } finally {
-                        exportJob = null
+    val dirty = edit != VideoEdit()
+    DiscardGuard(dirty, onClose)
+    val backdrop = rememberLayerBackdrop()
+    var cropRatio by remember { mutableStateOf<Float?>(null) }
+    var cropRatioLabel by remember { mutableStateOf("Free") }
+    var toneParam by remember { mutableIntStateOf(0) }
+    val toneOptions = remember { TONE_PARAMS.map { it.icon() to it.label } }
+
+    CompositionLocalProvider(LocalEditorBackdrop provides backdrop) {
+    Box(Modifier.fillMaxSize()) {
+        // Glass here sits on black, which never changes: it costs nothing per video frame.
+        Box(Modifier.fillMaxSize().layerBackdrop(backdrop).drawBehind { drawRect(Color.Black) })
+        Column(Modifier.fillMaxSize()) {
+            EditorTopBar(
+                canUndo = edit.let { history.canUndo },
+                canRedo = edit.let { history.canRedo },
+                canRevert = dirty,
+                onUndo = history::undo,
+                onRedo = history::redo,
+                onRevert = { history.commit(VideoEdit()) },
+                onSave = {
+                    player.pause()
+                    progress = 0f
+                    exportJob = scope.launch {
+                        try {
+                            onSaved(exportVideo(context, uri, displayName, edit) { progress = it })
+                        } catch (error: Throwable) {
+                            if (error is CancellationException) throw error
+                            Toast.makeText(context, error.exportMessage(), Toast.LENGTH_LONG).show()
+                        } finally {
+                            exportJob = null
+                        }
+                    }
+                },
+            )
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val still = cropPicture?.let { remember(it, edit.recipe.turns, edit.recipe.flipped) { it.oriented(edit.recipe) } }
+                if (tool == TOOL_CROP && still != null) {
+                    CropCanvas(
+                        picture = still,
+                        recipe = edit.recipe,
+                        ratio = cropRatio,
+                        showGrid = true,
+                        onCrop = { history.preview(edit.copy(recipe = edit.recipe.copy(crop = it))) },
+                        onCommit = { history.commit(edit) },
+                    )
+                    CropActions(
+                        ratioLabel = cropRatioLabel,
+                        onFlip = { history.commit(edit.copy(recipe = edit.recipe.flippedOver())) },
+                        onTurn = {
+                            history.commit(edit.copy(recipe = edit.recipe.turned()))
+                            cropRatio = null
+                            cropRatioLabel = "Free"
+                        },
+                        onRatio = { value, label ->
+                            cropRatio = value
+                            cropRatioLabel = label
+                            if (value != null) history.commit(edit.copy(recipe = edit.recipe.copy(crop = centeredCrop(value * still.height / still.width))))
+                        },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
+                    )
+                } else {
+                    Box(
+                        Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClickLabel = if (isPlaying) "Pause" else "Play") {
+                            if (player.isPlaying) player.pause() else player.play()
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        VideoPreview(videoSize, edit.recipe, texture, player)
+                        if (!isPlaying) {
+                            Box(Modifier.size(64.dp).liquid(), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                            }
+                        }
                     }
                 }
-            },
-        )
-        Box(
-            Modifier.weight(1f).fillMaxWidth().clickable { if (player.isPlaying) player.pause() else player.play() },
-            contentAlignment = Alignment.Center,
-        ) {
-            VideoPreview(videoSize, edit.recipe, texture, player)
-            if (!isPlaying) Icon(Icons.Rounded.PlayArrow, "Play", tint = Color.White, modifier = Modifier.size(56.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth().height(196.dp), contentAlignment = Alignment.BottomCenter) {
+                when (tool) {
+                    TOOL_TRIM -> TrimPanel(frames, durationMs, edit, { history.preview(it); player.seekTo(it.startMs) }, history::commit)
+                    TOOL_CROP -> Text("Drag the frame to crop", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(bottom = 24.dp))
+                    TOOL_FILTERS -> FilterPanel(frames.firstOrNull(), edit.recipe, { history.preview(edit.copy(recipe = it)) }, { history.commit(edit.copy(recipe = it)) })
+                    TOOL_TONE -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val param = TONE_PARAMS[toneParam]
+                        OptionPicker(toneOptions, changed = { TONE_PARAMS[it].get(edit.recipe.adjust) != 0f }, toneParam, onSelect = { toneParam = it })
+                        RulerDial(
+                            param.get(edit.recipe.adjust),
+                            param.min,
+                            1f,
+                            { history.preview(edit.copy(recipe = edit.recipe.copy(adjust = param.set(edit.recipe.adjust, it)))) },
+                            { history.commit(edit.copy(recipe = edit.recipe.copy(adjust = param.set(edit.recipe.adjust, it)))) },
+                        )
+                    }
+                    TOOL_SPEED -> SpeedPanel(edit) { history.commit(it) }
+                }
+            }
+            ToolBar(TOOLS, tool) { tool = it }
         }
-        when (tool) {
-            TOOL_TRIM -> TrimPanel(frames, durationMs, edit, { history.preview(it); player.seekTo(it.startMs) }, history::commit)
-            TOOL_ADJUST -> AdjustPanel(
-                edit.recipe.adjust,
-                VIDEO_PARAMS,
-                { history.preview(edit.copy(recipe = edit.recipe.copy(adjust = it))) },
-                { history.commit(edit.copy(recipe = edit.recipe.copy(adjust = it))) },
-            )
-            TOOL_PRESETS -> PresetPanel(frames.firstOrNull(), edit.recipe.adjust) { history.commit(edit.copy(recipe = edit.recipe.copy(adjust = it))) }
-            TOOL_SPEED -> SpeedPanel(edit) { history.commit(it) }
-        }
-        ToolTabs(TOOLS, tool) { tool = it }
+    }
     }
     exportJob?.let { job -> ExportOverlay(progress) { job.cancel() } }
 }
@@ -220,11 +279,11 @@ internal fun VideoEditor(uri: Uri, displayName: String, onClose: () -> Unit, onS
 @OptIn(UnstableApi::class)
 @Composable
 private fun VideoPreview(size: VideoSize, recipe: EditRecipe, texture: Array<TextureView?>, player: ExoPlayer) {
-    if (size.width <= 0 || size.height <= 0) return
+    // The view comes first even with no size yet: the player only reports one once it has a surface.
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val crop = recipe.crop
         val sideways = recipe.turns % 2 == 1
-        val raw = size.width * size.pixelWidthHeightRatio / size.height
+        val raw = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 1f
         val oriented = if (sideways) 1f / raw else raw
         val cropped = oriented * crop.width / crop.height
         val density = LocalDensity.current
@@ -248,7 +307,7 @@ private fun VideoPreview(size: VideoSize, recipe: EditRecipe, texture: Array<Tex
                 factory = { ctx ->
                     TextureView(ctx).also {
                         texture[0] = it
-                        it.setLayerPaint(Paint().apply { colorFilter = ColorMatrixColorFilter(recipe.adjust.colorMatrix()) })
+                        it.setLayerPaint(Paint().apply { colorFilter = ColorMatrixColorFilter(recipe.colorMatrix()) })
                         player.setVideoTextureView(it)
                     }
                 },
@@ -272,7 +331,7 @@ private fun VideoPreview(size: VideoSize, recipe: EditRecipe, texture: Array<Tex
 @Composable
 private fun TrimPanel(frames: List<Bitmap>, durationMs: Long, edit: VideoEdit, onPreview: (VideoEdit) -> Unit, onCommit: (VideoEdit) -> Unit) {
     val end = edit.endMs ?: durationMs
-    Column(Modifier.fillMaxWidth().background(ToolBackground).padding(12.dp)) {
+    Column(Modifier.fillMaxWidth().padding(12.dp)) {
         Row(Modifier.fillMaxWidth()) {
             Text(clock(edit.startMs), color = Color.White, fontSize = 13.sp)
             Spacer(Modifier.weight(1f))
@@ -311,18 +370,15 @@ private fun TrimPanel(frames: List<Bitmap>, durationMs: Long, edit: VideoEdit, o
 
 @Composable
 private fun SpeedPanel(edit: VideoEdit, onChange: (VideoEdit) -> Unit) {
-    Row(Modifier.fillMaxWidth().background(ToolBackground).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f)) {
-            ChipRow {
-                SPEEDS.forEach { speed ->
-                    Chip(if (speed % 1f == 0f) "${speed.toInt()}x" else "${speed}x", speed == edit.speed) { onChange(edit.copy(speed = speed)) }
-                }
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SPEEDS.forEach { speed ->
+                Chip(if (speed % 1f == 0f) "${speed.toInt()}x" else "${speed}x", speed == edit.speed) { onChange(edit.copy(speed = speed)) }
             }
         }
-        BarIcon(if (edit.muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, if (edit.muted) "Keep sound" else "Remove sound") {
+        GlassIcon(if (edit.muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, if (edit.muted) "Keep sound" else "Remove sound") {
             onChange(edit.copy(muted = !edit.muted))
         }
-        Spacer(Modifier.width(8.dp))
     }
 }
 

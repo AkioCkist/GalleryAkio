@@ -117,7 +117,7 @@ private fun videoEffects(recipe: EditRecipe): List<Effect> = buildList {
         val c = recipe.crop
         add(Crop(c.left * 2f - 1f, c.right * 2f - 1f, 1f - c.bottom * 2f, 1f - c.top * 2f))
     }
-    val matrix = recipe.adjust.colorMatrix().array
+    val matrix = recipe.colorMatrix().array
     if (!matrix.contentEquals(android.graphics.ColorMatrix().array)) {
         add(
             RgbMatrix { _, _ ->

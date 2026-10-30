@@ -29,5 +29,3 @@ dependencyResolutionManagement {
 rootProject.name = "GalleryAkio"
 include(":app")
 include(":editor")
-include(":lib:cropper")
-include(":lib:gesture")

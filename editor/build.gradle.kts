@@ -24,7 +24,6 @@ android {
 }
 
 dependencies {
-    implementation(project(":lib:cropper"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
@@ -35,6 +34,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)
     implementation(libs.toolbox.gpuimage)
+    implementation(libs.backdrop)
+    implementation(libs.mlkit.face.detection)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)

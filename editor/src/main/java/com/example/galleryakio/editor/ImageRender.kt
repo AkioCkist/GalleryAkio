@@ -10,6 +10,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -22,10 +23,13 @@ import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.size.Precision
 import coil3.size.Size
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import jp.co.cyberagent.android.gpuimage.GPUImage
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageFilterGroup
-import jp.co.cyberagent.android.gpuimage.filter.GPUImageHighlightShadowFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageSharpenFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageVignetteFilter
 import kotlinx.coroutines.Dispatchers
@@ -77,12 +81,39 @@ internal fun Bitmap.cropped(crop: CropFraction): Bitmap {
     return Bitmap.createBitmap(this, x, y, w, h)
 }
 
-/** Sharpen, vignette, shadows and highlights, on the GPU the way ImageToolbox's filters run them. */
-internal fun Bitmap.withPixelEffects(context: Context, adjust: Adjustments): Bitmap {
-    if (!adjust.hasPixelEffects) return this
+/** Straighten and skew: same size, zoomed in just enough to fill it. */
+internal fun Bitmap.transformed(recipe: EditRecipe): Bitmap {
+    val matrix = recipe.geometryMatrix(width, height) ?: return this
+    val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    Canvas(out).drawBitmap(this, matrix, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+    return out
+}
+
+/** Faces as fractions of the picture, widened from the detector's box to take in the whole face. */
+internal fun detectFaces(bitmap: Bitmap): List<RectF> {
+    val detector = FaceDetection.getClient(
+        FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build(),
+    )
+    return try {
+        Tasks.await(detector.process(InputImage.fromBitmap(bitmap, 0))).map { face ->
+            val box = face.boundingBox
+            val w = bitmap.width.toFloat()
+            val h = bitmap.height.toFloat()
+            RectF(box.left / w, box.top / h, box.right / w, box.bottom / h).apply { inset(-width() * 0.08f, -height() * 0.12f) }
+        }
+    } finally {
+        detector.close()
+    }
+}
+
+/** Shadows, highlights, Spot color, Face effects, sharpness and vignette, on the GPU. */
+internal fun Bitmap.withPixelEffects(context: Context, recipe: EditRecipe, faces: List<RectF>): Bitmap {
+    if (!recipe.hasPixelEffects) return this
+    val adjust = recipe.adjust
     val filters = buildList<GPUImageFilter> {
-        // 0 and 1 are "no change" for these two.
-        if (adjust.shadows != 0f || adjust.highlights != 0f) add(GPUImageHighlightShadowFilter(adjust.shadows, 1f - adjust.highlights))
+        if (adjust.shadows != 0f || adjust.highlights != 0f || recipe.spot.values.any { !it.isZero } || !recipe.face.isZero) {
+            add(ToneFilter(adjust.shadows, adjust.highlights, recipe.spot, recipe.face, faces))
+        }
         if (adjust.sharpen != 0f) add(GPUImageSharpenFilter(adjust.sharpen * 2f))
         if (adjust.vignette != 0f) {
             add(GPUImageVignetteFilter(PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0f), 0.75f - adjust.vignette * 0.55f, 1.05f - adjust.vignette * 0.2f))
@@ -93,12 +124,15 @@ internal fun Bitmap.withPixelEffects(context: Context, adjust: Adjustments): Bit
     return gpu.getBitmapWithFilterApplied(this)
 }
 
-/** The same colours the preview gets from its colour filter. */
-internal fun Bitmap.withColors(adjust: Adjustments): Bitmap {
-    val matrix = adjust.colorMatrix()
-    if (matrix == android.graphics.ColorMatrix()) return this
+/** The colours the preview gets from its colour filter, and the marks it draws on top. */
+internal fun Bitmap.finished(recipe: EditRecipe): Bitmap {
+    val matrix = recipe.colorMatrix()
+    val plain = matrix == android.graphics.ColorMatrix()
+    if (plain && recipe.marks.isEmpty()) return this
     val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    Canvas(out).drawBitmap(this, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) })
+    val canvas = Canvas(out)
+    canvas.drawBitmap(this, 0f, 0f, Paint().apply { if (!plain) colorFilter = ColorMatrixColorFilter(matrix) })
+    recipe.marks.drawOn(canvas, width.toFloat(), height.toFloat())
     return out
 }
 
@@ -119,10 +153,12 @@ internal suspend fun exportImage(
         }
         coroutineContext.ensureActive()
         step(bitmap.oriented(recipe))
+        step(bitmap.transformed(recipe))
         step(bitmap.cropped(recipe.crop))
         coroutineContext.ensureActive()
-        step(bitmap.withPixelEffects(context, recipe.adjust))
-        step(bitmap.withColors(recipe.adjust))
+        val faces = if (recipe.face.isZero) emptyList() else detectFaces(bitmap)
+        step(bitmap.withPixelEffects(context, recipe, faces))
+        step(bitmap.finished(recipe))
         bitmap
     }.getOrElse { error ->
         if (error is OutOfMemoryError) throw IllegalStateException("This image is too large to edit on this phone")

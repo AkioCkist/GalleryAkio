@@ -1,8 +1,7 @@
 Gallery Akio
 
-This app includes code from ImageToolbox (https://github.com/T8RIN/ImageToolbox)
-Copyright (c) T8RIN (Malik Mukhametzyanov), licensed under the Apache License 2.0:
-- lib/cropper and lib/gesture, modified; lib/README.md lists the changes.
-- The GPUImage build published as com.github.T8RIN.ImageToolboxLibs:gpuimage.
+This app uses the GPUImage build published by ImageToolbox
+(https://github.com/T8RIN/ImageToolbox) as com.github.T8RIN.ImageToolboxLibs:gpuimage,
+Copyright (c) T8RIN (Malik Mukhametzyanov), licensed under the Apache License 2.0.
 
 The licence text is in lib/LICENSE-ImageToolbox.
