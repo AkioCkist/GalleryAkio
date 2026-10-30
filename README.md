@@ -1,25 +1,37 @@
 # Gallery Akio
 
-Ứng dụng thư viện ảnh/video viết bằng Kotlin + Jetpack Compose, dựng lại từ bản APK 2.0 đã decompile của `com.appslab.gallery`
-(mã tham khảo nằm ở `../decompiled/sources/com/appslab/gallery`).
+A fast, offline-first photo and video gallery for Android, built from the ground up with Kotlin and Jetpack Compose.
 
-- Tên hiển thị: **Gallery Akio**
-- Package / namespace / applicationId: `com.example.galleryakio` (cài song song được với bản cũ `com.appslab.gallery`)
-- AGP 9.4.1, Kotlin 2.4.10, compileSdk 37, targetSdk 36, minSdk 24, Java 17
+## Features
 
-## Editor
+- **Library**: date-grouped photo grid with pinch-to-resize columns, fast scroller, multi-select, share and delete. Large libraries load in full.
+- **Albums**: browse and pin albums, and keep favorites.
+- **Viewer**: swipe between photos, pinch and double-tap zoom with sharp region decoding, video playback, EXIF details, rename and set as wallpaper.
+- **Offline search**: find media by labels, faces and text in images, using on-device ML Kit models. Nothing leaves the phone.
+- **Photo editor**: crop, turn, flip, straighten and skew; exposure, contrast, temperature and other adjustments; spot color; face smoothing; 12 color presets; drawing; undo.
+- **Video editor**: trim, crop, turn, color adjustments, speed and mute, exported with Media3 Transformer.
+- **Trash**: restore, delete or empty through the system trash.
+- **Look and feel**: 6 themes in light and dark, and a liquid glass navigation bar.
 
-Module `:editor` sửa ảnh và video, mở từ nút Edit trên HUD của viewer; luôn lưu thành file mới.
-Cropper và GPUImage lấy từ [ImageToolbox](https://github.com/T8RIN/ImageToolbox), xem `lib/README.md` và `NOTICE`. Video xuất bằng Media3 Transformer.
+Edits are always saved as a new file, so the original stays untouched.
 
-## Yêu cầu
+## Tech stack
 
-- Android Studio (dùng JDK đi kèm `jbr`) hoặc JDK 17+
-- Android SDK, đường dẫn đặt trong `local.properties` (`sdk.dir=...`)
-- `adb` trong PATH (`%LOCALAPPDATA%\Android\Sdk\platform-tools`)
-- Điện thoại bật **Developer options → USB debugging**, cắm USB và bấm *Allow* khi máy hỏi
+- Kotlin 2.4.10, Jetpack Compose, Material 3
+- Android Gradle Plugin 9.4.1, Java 17
+- minSdk 24, targetSdk 36, compileSdk 37
+- Coil, Media3, ML Kit, GPUImage
 
-Đặt `JAVA_HOME` trước khi chạy Gradle:
+Package name: `com.example.galleryakio`
+
+## Requirements
+
+- Android Studio (its bundled `jbr` works as the JDK), or JDK 17+
+- Android SDK, with its path set in `local.properties` (`sdk.dir=...`)
+- `adb` in your PATH (`%LOCALAPPDATA%\Android\Sdk\platform-tools` on Windows)
+- An Android phone with **Developer options → USB debugging** turned on, connected over USB, with *Allow* accepted on the phone
+
+Set `JAVA_HOME` before running Gradle.
 
 PowerShell:
 
@@ -33,17 +45,17 @@ Git Bash:
 export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
 ```
 
-## Build release và cài thẳng vào máy qua USB
+## Build a release and install it over USB
 
-Kiểm tra máy đã nhận:
+Check that the phone is connected:
 
 ```bash
 adb devices
 ```
 
-Phải thấy một dòng `<serial>    device`. Nếu là `unauthorized`, mở khoá màn hình điện thoại và chấp nhận hộp thoại USB debugging.
+You should see a line reading `<serial>    device`. If it says `unauthorized`, unlock the phone and accept the USB debugging prompt.
 
-Build release (R8 minify + shrink resources) rồi cài luôn:
+Build the release (R8 minify and resource shrinking) and install it.
 
 PowerShell:
 
@@ -57,114 +69,127 @@ Git Bash:
 ./gradlew installRelease
 ```
 
-Mở app sau khi cài:
+Launch the app:
 
 ```bash
 adb shell am start -n com.example.galleryakio/.MainActivity
 ```
 
-Gộp cả ba bước trong một lệnh (PowerShell):
+All of it in one PowerShell command:
 
 ```powershell
 $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"; .\gradlew.bat installRelease && adb shell am start -n com.example.galleryakio/.MainActivity
 ```
 
-Cách khác: build APK rồi tự cài bằng `adb` (`-r` giữ dữ liệu, `-d` cho phép hạ versionCode):
+### Install the APK manually
+
+Build the APK:
 
 ```bash
 ./gradlew assembleRelease
 ```
 
+Install it (`-r` keeps app data, `-d` allows a lower versionCode):
+
 ```bash
 adb install -r -d app/build/outputs/apk/release/app-release.apk
 ```
 
-Có nhiều máy cắm cùng lúc thì chọn máy bằng serial:
+With several devices connected, pick one by serial:
 
 ```bash
 adb -s <serial> install -r -d app/build/outputs/apk/release/app-release.apk
 ```
 
-Hoặc với Gradle: đặt biến môi trường `ANDROID_SERIAL=<serial>` trước khi chạy `installRelease`.
+For Gradle, set the `ANDROID_SERIAL=<serial>` environment variable before running `installRelease`.
 
-### Lưu ý về chữ ký
+### Signing
 
-Bản release hiện ký bằng **debug key** (`signingConfig = signingConfigs.getByName("debug")` trong `app/build.gradle.kts`),
-nên cài đè lên bản debug được mà không mất dữ liệu. Trước khi phát hành, thay bằng key thật. Nếu trên máy đã có bản ký
-bằng key khác, `adb install` sẽ báo `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; khi đó phải gỡ bản cũ (mất dữ liệu app):
+The release build is currently signed with the **debug key** (`signingConfig = signingConfigs.getByName("debug")` in `app/build.gradle.kts`), so it installs over a debug build and keeps its data. Replace it with a real key before distributing the app.
+
+If the phone has a build signed with a different key, `adb install` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall the old build first. **This deletes the app's data:**
 
 ```bash
 adb uninstall com.example.galleryakio
 ```
 
-## Build debug
+## Debug build
+
+Build the APK, which lands in `app/build/outputs/apk/debug/app-debug.apk`:
 
 ```bash
 ./gradlew assembleDebug
 ```
 
+Or build and install it:
+
 ```bash
 ./gradlew installDebug
 ```
 
-APK nằm ở `app/build/outputs/apk/debug/app-debug.apk`.
+## Device tests
 
-## Test trên máy
+**Do not use `connectedAndroidTest`.** It uninstalls the app when it finishes, which deletes the app's data and settings. Install the test APK and run it with `am instrument` instead.
 
-**Không dùng `connectedAndroidTest`**: task này gỡ app sau khi chạy, xoá luôn dữ liệu và cài đặt. Cài APK test rồi chạy bằng `am instrument`:
+Install both APKs:
 
 ```bash
 ./gradlew installDebug installDebugAndroidTest
 ```
 
+Run all tests:
+
 ```bash
 adb shell am instrument -w com.example.galleryakio.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Chạy một class:
+Run a single class:
 
 ```bash
 adb shell am instrument -w -e class com.example.galleryakio.PinchZoomTest com.example.galleryakio.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Các test có sẵn: `PinchJankTest`, `PinchZoomTest`, `ViewerTransitionTest`, `ViewerZoomTest`.
+Available tests: `PinchJankTest`, `PinchZoomTest`, `ViewerTransitionTest`, `ViewerZoomTest`, `ZoomSharpnessTest`.
 
-## Cấu trúc
+## Project structure
 
-Mã nguồn trong `app/src/main/java/com/example/galleryakio`:
+The project has two modules: `:app` and `:editor`.
 
-| Đường dẫn | Chức năng |
+Source in `app/src/main/java/com/example/galleryakio`:
+
+| Path | Purpose |
 |---|---|
-| `GalleryApplication.kt`, `MainActivity.kt` | Khởi tạo app, media indexer, activity duy nhất |
-| `data/Models.kt` | MediaItem, Album, các enum sắp xếp / lọc / định dạng ngày |
-| `data/MediaRepository.kt` | Truy vấn MediaStore, theo dõi thay đổi, thùng rác / xoá / đổi tên |
-| `data/Settings.kt` | SharedPreferences dạng StateFlow (giữ nguyên key của `GalleryPrefs` bản gốc) |
-| `data/ThumbnailFetcher.kt` | Giải mã thumbnail cho Coil |
-| `data/search/*` | Tìm kiếm offline: gắn nhãn ảnh, nhận diện khuôn mặt, OCR (ML Kit), chỉ mục và danh mục |
-| `ui/Navigation.kt` | Điều hướng giữa các màn hình |
-| `ui/GalleryViewModel.kt`, `ui/SearchViewModel.kt` | Nguồn dữ liệu chung cho thư viện và tìm kiếm |
-| `ui/theme/Theme.kt` | 6 theme, sáng và tối |
-| `ui/components/*` | Lưới media, fast scroller, thanh điều hướng kính mờ (liquid glass), zoom, chuyển cảnh, trình phát video |
-| `ui/screens/MainTabsScreen.kt` | Tab PHOTOS / ALBUMS / SEARCH, header tự ẩn, menu ⋮ |
-| `ui/screens/PhotosScreen.kt` | Lưới ảnh theo ngày, chọn nhiều, chia sẻ, xoá |
-| `ui/screens/AlbumsScreen.kt` | Album, ghim album, chi tiết album, mục yêu thích |
-| `ui/screens/PhotoDetailScreen.kt` | Xem ảnh vuốt ngang, pinch/double-tap zoom, video, EXIF, đổi tên, đặt làm hình nền |
-| `ui/screens/SearchScreen.kt` | Tìm kiếm theo nhãn, khuôn mặt, chữ trong ảnh |
-| `ui/screens/SettingsScreen.kt` | Theme, lưới, sắp xếp, bộ lọc, định dạng ngày, xem ảnh, cache, thông tin |
-| `ui/screens/TrashScreen.kt` | Thùng rác hệ thống: khôi phục, xoá, dọn sạch |
+| `GalleryApplication.kt`, `MainActivity.kt` | App startup, media indexer, single activity |
+| `VideoPlaybackService.kt` | Video playback service |
+| `data/Models.kt` | Media items, albums, sort, filter and date format enums |
+| `data/MediaRepository.kt` | MediaStore queries, change tracking, trash, delete and rename |
+| `data/MediaDetails.kt` | Media details |
+| `data/Settings.kt` | SharedPreferences exposed as StateFlow |
+| `data/ThumbnailFetcher.kt` | Thumbnail decoding for Coil |
+| `data/search/*` | Offline image labeling, face detection, OCR, search index and categories |
+| `ui/Navigation.kt` | Navigation between screens |
+| `ui/GalleryViewModel.kt`, `ui/SearchViewModel.kt` | Shared state for the library and search |
+| `ui/theme/Theme.kt` | Themes |
+| `ui/components/*` | Media grid, fast scroller, glass navigation bar, zoom, transitions, video player |
+| `ui/screens/*` | Main tabs, photos, albums, viewer, search, settings and trash screens |
 
-## Khác với bản gốc
+Source in `editor/src/main/java/com/example/galleryakio/editor`:
 
-- Bỏ `LIMIT 1000` / `LIMIT 500` trong truy vấn: thư viện lớn được tải đầy đủ.
-- Một `ContentObserver` có debounce và một cache dữ liệu chung thay vì mỗi màn hình một cái.
-- Thumbnail lưới giải mã đúng kích thước ô; trình xem dùng thumbnail làm placeholder.
-- Dùng thùng rác hệ thống (`MediaStore.createTrashRequest`) thay vì copy file.
-- Tìm kiếm dùng model ML Kit đóng gói sẵn, chạy offline. APK release khoảng 127 MB, phần lớn là model ML Kit.
+| Path | Purpose |
+|---|---|
+| `EditorScreen.kt` | Editor entry point, opened from the viewer's Edit button |
+| `EditRecipe.kt` | Every edit as data, which also drives undo |
+| `ImageEditor.kt`, `ImageRender.kt` | Photo editing UI and export |
+| `VideoEditor.kt`, `VideoExport.kt` | Video editing UI and export |
+| `CropTool.kt`, `DecorateTool.kt`, `Marks.kt`, `ToneFilter.kt` | Crop, drawing and tone tools |
 
-## Lộ trình
+## Roadmap
 
-1. **Xong**: thư viện ảnh cơ bản.
-2. Trình chỉnh sửa ảnh: cắt, xoay, lật, chỉnh màu, 16 filter, vẽ (`edit/*`, `EditScreenKt`).
-3. Ảnh ẩn và vault: mật khẩu, sinh trắc học, khoá app (`HideScreenKt`, `VaultPasswordManager`, `BiometricHelper`).
-4. Tìm kiếm và AI: **đã có** gắn nhãn, khuôn mặt, OCR; còn màn AI image (`AIImageScreenKt`, `AIImageViewModel`).
-5. Billing / premium (`billing/BillingManager`, `premium/*`), quản lý album (tạo, chuyển, sao chép, ảnh bìa).
+- Hidden photos and a vault with password, biometrics and app lock
+- Album management: create, move, copy and set a cover
+- AI image tools
+- Premium features
+
+## Third-party code
+
+The editor uses the GPUImage build published by [ImageToolbox](https://github.com/T8RIN/ImageToolbox), Copyright T8RIN (Malik Mukhametzyanov), under the Apache License 2.0. See [NOTICE](NOTICE) and [lib/README.md](lib/README.md).
