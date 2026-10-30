@@ -104,6 +104,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import coil3.toBitmap
 import com.example.galleryakio.GalleryApplication
 import com.example.galleryakio.data.MediaItem
 import coil3.video.videoFrameMillis
@@ -158,6 +159,10 @@ private const val PREVIEW_LONG_SIDE = 320
 private const val PREVIEW_CACHE_BYTES = 24 shl 20
 /** Mid-scrub, a preview stands in while the picture on screen is further than this from the target. */
 private const val PREVIEW_GAP_MS = 150L
+/** No previews are copied until this long after the first picture. */
+private const val PREVIEW_START_DELAY_MS = 1_000L
+/** Filmstrip decoding waits this long after the first picture, to stay clear of playback starting. */
+private const val FILMSTRIP_DELAY_MS = 500L
 /** After a scrub, how long a preview may wait for the exact picture to replace it. */
 private const val PREVIEW_HOLD_MS = 1_500L
 /** How often the glass catches up with a moving picture: each time costs one slower frame. */
@@ -329,6 +334,8 @@ fun VideoPlayer(
     // Presentation time of the last picture handed to the screen, from the playback thread.
     val shownUs = remember(player) { AtomicLong(Long.MIN_VALUE) }
     val previews = remember(player) { ScrubPreviews() }
+    // The opening picture, standing in for the glass until the first preview is copied.
+    var openingFrame by remember(player) { mutableStateOf<ImageBitmap?>(null) }
     // Drawn over the video mid-scrub while the decoder catches up.
     var preview by remember(player) { mutableStateOf<ImageBitmap?>(null) }
 
@@ -350,11 +357,15 @@ fun VideoPlayer(
 
     DisposableEffect(player) {
         val main = Handler(Looper.getMainLooper())
+        var firstReleaseNs = 0L
         val frames = VideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
             shownUs.set(presentationTimeUs)
             val bucket = presentationTimeUs / 1000 / PREVIEW_STEP_MS
+            if (firstReleaseNs == 0L) firstReleaseNs = releaseTimeNs
+            val settled = (releaseTimeNs - firstReleaseNs) / 1_000_000 >= PREVIEW_START_DELAY_MS
             // Not for a page on its way in: the read-back would cost frames of the swipe.
-            if (active && presentationTimeUs >= 0 && previews.claim(bucket)) {
+            // Nor while playback starts: the first read-back is the slowest, 20-50 ms just as the picture appears.
+            if (active && settled && presentationTimeUs >= 0 && previews.claim(bucket)) {
                 val untilShown = ((releaseTimeNs - System.nanoTime()) / 1_000_000).coerceIn(0, 100)
                 main.postDelayed({ capturePreview(bucket) }, untilShown + 8)
             }
@@ -618,7 +629,7 @@ fun VideoPlayer(
         }
         if (!controlsVisible) return@LaunchedEffect
         while (isActive) {
-            previews.near(player.currentPosition)?.let { controlsHost.backdropStill = it }
+            (previews.near(player.currentPosition) ?: openingFrame)?.let { controlsHost.backdropStill = it }
             delay(GLASS_REFRESH_MS)
         }
     }
@@ -635,7 +646,7 @@ fun VideoPlayer(
 
     // Loaded here, not inside the controls: those leave composition each time they hide,
     // which threw the frames away and made every reappearance load them again.
-    val frames = rememberFilmstripFrames(item, duration, load = isCurrentPage)
+    val frames = rememberFilmstripFrames(item, duration, load = isCurrentPage && firstFrame)
 
     fun togglePlay() {
         when {
@@ -735,7 +746,13 @@ fun VideoPlayer(
             preview?.let { Image(it, null, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize()) }
             // The still stays on top until the first frame is drawn, so opening a video never flashes black.
             if (!firstFrame) {
-                AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                AsyncImage(
+                    still,
+                    null,
+                    contentScale = ContentScale.Fit,
+                    onSuccess = { openingFrame = it.result.image.toBitmap().asImageBitmap() },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
@@ -820,6 +837,7 @@ private fun rememberFilmstripFrames(item: MediaItem, duration: Long, load: Boole
     val heightPx = with(LocalDensity.current) { STRIP_HEIGHT.roundToPx() }
     LaunchedEffect(frames, duration > 0, load) {
         if (!load || duration <= 0 || frames.none { it == null }) return@LaunchedEffect
+        delay(FILMSTRIP_DELAY_MS)
         withContext(Dispatchers.IO) {
             val retriever = MediaMetadataRetriever()
             try {

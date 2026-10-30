@@ -327,8 +327,9 @@ fun PhotoDetailScreen(
                     // does: handing over the controls then cost frames of the motion.
                     isCurrentPage = page == pager.settledPage,
                     isNearby = abs(page - pager.settledPage) <= 1,
-                    // The page ahead first: that's the likely next swipe.
-                    preloadDelayMs = if (page > pager.settledPage) 400L else 700L,
+                    // The page ahead first: that's the likely next swipe. Both after the page at rest
+                    // has started playing: earlier, building them made its first frames stutter.
+                    preloadDelayMs = if (page > pager.settledPage) 1_000L else 1_300L,
                     isVisible = isVisible,
                     isAudible = page == pager.currentPage,
                     leaving = closing || editing,
