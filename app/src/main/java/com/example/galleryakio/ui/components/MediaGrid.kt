@@ -1,6 +1,7 @@
 package com.example.galleryakio.ui.components
 
 import androidx.compose.runtime.CompositionLocalProvider
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.scrollBy
@@ -571,7 +572,7 @@ fun MediaGrid(
     }
     val cellPx = rememberCellSizePx(liveColumns, LocalConfiguration.current.screenWidthDp)
     // What the fast-scroll drop refracts: the grid, recorded only while the drop is on screen.
-    val scrollerGlass = rememberSharedBackdrop()
+    val scrollerGlass = rememberLayerBackdrop()
     var scrollerShown by remember { mutableStateOf(false) }
 
     if (style == GridStyle.MASONRY) {

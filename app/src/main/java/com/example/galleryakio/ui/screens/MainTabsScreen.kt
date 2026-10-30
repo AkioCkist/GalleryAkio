@@ -64,8 +64,8 @@ import com.example.galleryakio.ui.components.NAV_BAR_HEIGHT
 import com.example.galleryakio.ui.components.NAV_BAR_MARGIN
 import com.example.galleryakio.ui.components.NavTab
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.example.galleryakio.ui.components.BackdropSource
-import com.example.galleryakio.ui.components.rememberSharedBackdrop
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -106,7 +106,10 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
     val scope = rememberCoroutineScope()
     val background = MaterialTheme.colorScheme.background
     // What the glass bar shows through: the tab pages, recorded into a layer each frame.
-    val backdrop = rememberSharedBackdrop(background)
+    val backdrop = rememberLayerBackdrop {
+        drawRect(background)
+        drawContent()
+    }
 
     // The bar slides away while the user scrolls down through photos, and comes back when
     // they scroll up, tap empty space or change tab.

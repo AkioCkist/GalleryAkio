@@ -21,7 +21,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import com.example.galleryakio.ui.components.BackdropSource
-import com.example.galleryakio.ui.components.rememberSharedBackdrop
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.snapshotFlow
@@ -41,6 +40,7 @@ import com.example.galleryakio.ui.components.LocalGlassContent
 import androidx.compose.foundation.shape.CircleShape
 import com.example.galleryakio.ui.components.liquidGlass
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.CompositionLocalProvider
 import com.example.galleryakio.ui.components.LocalViewerZoom
@@ -128,6 +128,7 @@ import com.example.galleryakio.R
 import com.example.galleryakio.data.MediaItem
 import com.example.galleryakio.ui.GalleryViewModel
 import com.example.galleryakio.ui.MediaSource
+import com.example.galleryakio.ui.components.VideoControlsHost
 import com.example.galleryakio.ui.components.VideoPlayer
 import com.example.galleryakio.ui.components.ZoomableImage
 import com.example.galleryakio.ui.components.formatDuration
@@ -183,7 +184,6 @@ fun PhotoDetailScreen(
     val trashConsent = rememberConsentLauncher { }
 
     val density = LocalDensity.current
-    var bottomBarHeight by remember { mutableStateOf(0.dp) }
     var landscape by remember { mutableStateOf(false) }
     // Animated from an effect rather than animateFloatAsState, which would read `overlay`
     // here and recompose the whole viewer (pager included) on every tap.
@@ -231,7 +231,11 @@ fun PhotoDetailScreen(
     val dismissVelocity = with(density) { DISMISS_VELOCITY.toPx() }
     val scope = rememberCoroutineScope()
     val zoom = remember { ViewerZoom() }
-    val backdrop = rememberSharedBackdrop(Color.Black)
+    val videoControls = remember { VideoControlsHost() }
+    val backdrop = rememberLayerBackdrop {
+        drawRect(Color.Black)
+        drawContent()
+    }
     val latestOnBack by rememberUpdatedState(onBack)
     // Remembered once: pointerInput restarts its gesture whenever its lambda changes, and a
     // fresh lambda each recomposition cut every swipe off after its first couple of events.
@@ -289,7 +293,7 @@ fun PhotoDetailScreen(
                     rememberPosition = settings.rememberVideoPosition,
                     controlsVisible = overlay,
                     onControlsChange = { overlay = it },
-                    bottomInset = bottomBarHeight,
+                    controlsHost = videoControls,
                 )
             } else {
                 ZoomableImage(item, isCurrentPage = isCurrent, onTap = { overlay = !overlay })
@@ -328,8 +332,11 @@ fun PhotoDetailScreen(
         }
         FadingOverlay({ overlay }, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                // Room for the video controls and filmstrip, which the player draws itself.
-                if (current.isVideo) Spacer(Modifier.height(VIDEO_CONTROLS_HEIGHT))
+                // The current video's controls and filmstrip, glass over the same backdrop as the bars.
+                val controls = videoControls.content
+                if (current.isVideo) {
+                    if (controls != null) controls(backdrop) else Spacer(Modifier.height(VIDEO_CONTROLS_HEIGHT))
+                }
                 BottomBar(
                     backdrop = backdrop,
                     isFavorite = current.id in settings.favoriteIds,
@@ -337,7 +344,6 @@ fun PhotoDetailScreen(
                     onDetails = { showInfo = true },
                     onShare = { shareItems(context, listOf(current)) },
                     onDelete = { confirmTrash = true },
-                    modifier = Modifier.onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } },
                 )
             }
         }

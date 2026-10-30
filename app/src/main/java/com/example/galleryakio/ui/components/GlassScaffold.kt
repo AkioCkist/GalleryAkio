@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.galleryakio.ui.theme.CqMono
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /** Height of the floating header's controls. */
 val GLASS_HEADER_SIZE = 44.dp
@@ -53,12 +55,15 @@ fun GlassScaffold(
 ) {
     val background = MaterialTheme.colorScheme.background
     // What the header blurs: the screen's content, recorded into a layer as it changes.
-    val backdrop = rememberSharedBackdrop(background)
+    val backdrop = rememberLayerBackdrop {
+        drawRect(background)
+        drawContent()
+    }
     val dark = glassIsDark()
     val ink = glassContent(dark)
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + GLASS_HEADER_SIZE + 16.dp
     Box(Modifier.fillMaxSize().background(background)) {
-        Box(Modifier.fillMaxSize().sharedBackdrop(backdrop)) { content(PaddingValues(top = top)) }
+        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) { content(PaddingValues(top = top)) }
         // Content scrolls under the transparent status bar; fade it so the clock stays readable.
         Box(
             Modifier

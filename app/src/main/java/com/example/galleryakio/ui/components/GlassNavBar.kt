@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.sp
 import com.example.galleryakio.ui.theme.CqMono
 import androidx.compose.foundation.layout.BoxScope
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -53,19 +55,19 @@ private fun glassColors(darkMode: Boolean) =
     else GlassColors(Color(0xFFFAFAFA).copy(alpha = 0.5f), Color(0xFF151515), Color.Black.copy(alpha = 0.08f))
 
 /**
- * Makes [content] the source of [backdrop] while [enabled], i.e. while some glass over it is
- * showing. A [SharedBackdrop] costs little (the content is still recorded only once), but
- * nothing at all is better while no glass uses it. [enabled] is read here, so flipping it
- * recomposes only this Box.
+ * Records [content] into [backdrop] only while [enabled], i.e. while some glass over it is
+ * showing. A recorded backdrop costs a second draw of the content on every frame it changes
+ * (every frame of a playing video), whether or not any glass is visible to use it.
+ * [enabled] is read here, so flipping it recomposes only this Box.
  */
 @Composable
 fun BackdropSource(
-    backdrop: SharedBackdrop,
+    backdrop: LayerBackdrop,
     enabled: () -> Boolean,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    Box(modifier.then(if (enabled()) Modifier.sharedBackdrop(backdrop) else Modifier), content = content)
+    Box(modifier.then(if (enabled()) Modifier.layerBackdrop(backdrop) else Modifier), content = content)
 }
 
 /** Liquid glass surface: the content behind is blurred, saturated and bent at the edges. */
@@ -79,7 +81,6 @@ fun Modifier.liquidGlass(
     /** Tint over the blur; panels with text use a denser one than the default. */
     surface: Color = glassColors(darkMode).surface,
 ): Modifier {
-    if (EXP and 1 != 0) return this.background(surface, shape)
     return drawBackdrop(
         backdrop = backdrop,
         shape = { shape },
@@ -167,8 +168,3 @@ fun GlassCircleButton(
         Icon(icon, description, tint = glassColors(darkMode).content, modifier = Modifier.size(22.dp))
     }
 }
-
-// TEMP perf experiment
-val EXP: Int = runCatching {
-    Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, "debug.gallery.exp") as String
-}.getOrNull()?.toIntOrNull() ?: 0

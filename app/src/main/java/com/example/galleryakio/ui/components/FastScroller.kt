@@ -71,7 +71,6 @@ private const val JUMP_INTERVAL_MS = 100L
  */
 @Composable
 private fun GlassDrop(backdrop: Backdrop, tint: () -> Color?, scale: () -> Float, modifier: Modifier) {
-    if (EXP and 2 != 0) { Spacer(modifier.background(Color.White.copy(alpha = 0.4f), DropShape)); return }
     Spacer(
         modifier
             .graphicsLayer {

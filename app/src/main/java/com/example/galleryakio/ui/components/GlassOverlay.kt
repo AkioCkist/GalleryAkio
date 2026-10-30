@@ -70,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.galleryakio.ui.theme.CqMono
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlin.math.roundToInt
 
 /*
@@ -113,10 +115,13 @@ fun glassContent(dark: Boolean) = if (dark) Color.White else Color(0xFF151515)
 fun GlassOverlayHost(content: @Composable () -> Unit) {
     val host = remember { OverlayHost() }
     val background = MaterialTheme.colorScheme.background
-    val backdrop = rememberSharedBackdrop(background)
+    val backdrop = rememberLayerBackdrop {
+        drawRect(background)
+        drawContent()
+    }
     val active = host.entries.isNotEmpty()
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().then(if (active) Modifier.sharedBackdrop(backdrop) else Modifier)) {
+        Box(Modifier.fillMaxSize().then(if (active) Modifier.layerBackdrop(backdrop) else Modifier)) {
             CompositionLocalProvider(LocalOverlayHost provides host, content = content)
         }
         host.entries.forEachIndexed { i, entry ->

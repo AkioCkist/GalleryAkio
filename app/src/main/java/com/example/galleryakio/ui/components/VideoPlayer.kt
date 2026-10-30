@@ -4,24 +4,22 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.LruCache
 import android.view.TextureView
 import android.widget.Toast
 import androidx.annotation.OptIn
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import com.kyant.backdrop.Backdrop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.FlingBehavior
-import androidx.compose.foundation.gestures.ScrollScope
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.ScrollableDefaults
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -59,7 +57,6 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -67,19 +64,13 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -88,18 +79,22 @@ import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.example.galleryakio.GalleryApplication
 import com.example.galleryakio.data.MediaItem
 import com.example.galleryakio.data.MediaThumb
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 
 /** Remembers playback positions per video id for the "remember video position" setting. */
 object VideoPositions {
@@ -118,19 +113,76 @@ object VideoPositions {
 }
 
 private const val AUTO_HIDE_MS = 3_000L
+/** A scrub seek counts as shown once a picture this close to its target is rendered. */
+private const val SEEK_ARRIVED_MS = 100L
+/**
+ * ...or after this long, in case it never reports in. Cutting a seek short restarts the decode
+ * from its key frame, so backwards through a long group of pictures nothing ever showed.
+ */
+private const val SEEK_PATIENCE_MS = 1_000L
+/** One scrub preview per this much video... */
+private const val PREVIEW_STEP_MS = 400L
+/** A scrub shows the nearest copy up to this many steps away (1.2 s). */
+private const val PREVIEW_REACH = 3
+/** ...this many pixels on its long side (a blurry stand-in, it only shows mid-scrub)... */
+private const val PREVIEW_LONG_SIDE = 320
+/** ...and at most this much memory per video (some 100 previews, 40 s of video). */
+private const val PREVIEW_CACHE_BYTES = 24 shl 20
+/** Mid-scrub, a preview stands in while the picture on screen is further than this from the target. */
+private const val PREVIEW_GAP_MS = 150L
+/** After a scrub, how long a preview may wait for the exact picture to replace it. */
+private const val PREVIEW_HOLD_MS = 1_500L
 private val FRAME_WIDTH = 56.dp
 private val STRIP_HEIGHT = 52.dp
 private val CONTROL_SIZE = 36.dp
 
-/** The strip stops where the finger lets go: scrubbing needs precision, not momentum. */
-private val NoFling = object : FlingBehavior {
-    override suspend fun ScrollScope.performFling(initialVelocity: Float) = initialVelocity
+/** The strip moves this much faster than the finger, so a short drag covers more of the video. */
+private const val SCRUB_SPEED = 1.34f
+
+/**
+ * Where the current video's controls go: the viewer draws them in its own bottom overlay,
+ * outside the pager it records for its glass. Drawn inside the pager they were glass within
+ * the recorded backdrop, so every viewer glass control re-drew them (and a second recording
+ * of the video) on each video frame: the HUD ran at ~20 fps.
+ */
+class VideoControlsHost {
+    var content by mutableStateOf<(@Composable (Backdrop) -> Unit)?>(null)
 }
 
-/** Reaching either end of the strip must not start swiping to the next photo. */
-private val KeepScroll = object : NestedScrollConnection {
-    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource) = available
-    override suspend fun onPostFling(consumed: Velocity, available: Velocity) = available
+/**
+ * Small copies of pictures already shown, one per [PREVIEW_STEP_MS] of video. Scrubbing back
+ * (or forward faster than the decoder keeps up) decodes again from the group of pictures' key
+ * frame, which in phone and downloaded videos is 3-9 s back: over a second of decoding for one
+ * picture. Meanwhile the nearest copy stands in, so the picture follows the finger.
+ * Claimed on the playback thread, filled on the main thread.
+ */
+private class ScrubPreviews {
+    private val cache = object : LruCache<Long, ImageBitmap>(PREVIEW_CACHE_BYTES) {
+        override fun sizeOf(key: Long, value: ImageBitmap) = value.width * value.height * 4
+    }
+    private val pending = HashSet<Long>()
+
+    /** True (once) when [bucket] has no preview yet and the caller should take it. */
+    @Synchronized
+    fun claim(bucket: Long): Boolean = cache[bucket] == null && pending.add(bucket)
+
+    @Synchronized
+    fun put(bucket: Long, frame: ImageBitmap?) {
+        pending.remove(bucket)
+        if (frame != null) cache.put(bucket, frame)
+    }
+
+    /** The copy closest to [ms], up to [PREVIEW_REACH] steps either way. */
+    fun near(ms: Long): ImageBitmap? {
+        val bucket = ms / PREVIEW_STEP_MS
+        for (d in 0..PREVIEW_REACH) {
+            cache[bucket - d]?.let { return it }
+            if (d > 0) cache[bucket + d]?.let { return it }
+        }
+        return null
+    }
+
+    fun clear() = cache.evictAll()
 }
 
 /**
@@ -140,8 +192,8 @@ private val KeepScroll = object : NestedScrollConnection {
  * The video draws into a TextureView (a SurfaceView ignores Compose transforms), so it
  * zooms and pans with the same gestures as photos. Controls follow Samsung Gallery:
  * frame capture, a play/time pill and mute above a filmstrip that scrubs under a fixed
- * playhead. They show together with the viewer's own bars ([controlsVisible] /
- * [onControlsChange]); [bottomInset] is the height of the viewer's bottom bar.
+ * playhead. They are handed to [controlsHost] and show together with the viewer's own
+ * bars ([controlsVisible] / [onControlsChange]).
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -151,7 +203,7 @@ fun VideoPlayer(
     rememberPosition: Boolean,
     controlsVisible: Boolean,
     onControlsChange: (Boolean) -> Unit,
-    bottomInset: Dp,
+    controlsHost: VideoControlsHost,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -190,7 +242,46 @@ fun VideoPlayer(
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(item.duration ?: 0L) }
     val strip = rememberScrollState()
-    val scrubbing by strip.interactionSource.collectIsDraggedAsState()
+    var scrubbing by remember { mutableStateOf(false) }
+    // Presentation time of the last picture handed to the screen, from the playback thread.
+    val shownUs = remember(player) { AtomicLong(Long.MIN_VALUE) }
+    val previews = remember(player) { ScrubPreviews() }
+    // Drawn over the video mid-scrub while the decoder catches up.
+    var preview by remember(player) { mutableStateOf<ImageBitmap?>(null) }
+
+    // A copy of the picture, taken just after it reaches the screen: a small GPU read-back,
+    // about two or three times a second of video.
+    fun capturePreview(bucket: Long) {
+        val view = textureView[0]
+        val frame = if (view != null && view.isAvailable) {
+            val w = if (aspect >= 1f) PREVIEW_LONG_SIDE else (PREVIEW_LONG_SIDE * aspect).toInt()
+            val h = if (aspect >= 1f) (PREVIEW_LONG_SIDE / aspect).toInt() else PREVIEW_LONG_SIDE
+            // One pixel bigger all round, then trimmed: scaling down samples the decoder's
+            // padding at the edges, which showed as a green line along the preview.
+            view.getBitmap(w.coerceAtLeast(1) + 2, h.coerceAtLeast(1) + 2)
+                ?.let { Bitmap.createBitmap(it, 1, 1, it.width - 2, it.height - 2) }
+                ?.asImageBitmap()
+        } else null
+        previews.put(bucket, frame)
+    }
+
+    DisposableEffect(player) {
+        val main = Handler(Looper.getMainLooper())
+        val frames = VideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
+            shownUs.set(presentationTimeUs)
+            val bucket = presentationTimeUs / 1000 / PREVIEW_STEP_MS
+            if (presentationTimeUs >= 0 && previews.claim(bucket)) {
+                val untilShown = ((releaseTimeNs - System.nanoTime()) / 1_000_000).coerceIn(0, 100)
+                main.postDelayed({ capturePreview(bucket) }, untilShown + 8)
+            }
+        }
+        player.setVideoFrameMetadataListener(frames)
+        onDispose {
+            player.clearVideoFrameMetadataListener(frames)
+            main.removeCallbacksAndMessages(null)
+            previews.clear()
+        }
+    }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -240,27 +331,56 @@ fun VideoPlayer(
             if (isPlaying) withFrameNanos {} else delay(250)
         }
     }
-    // Dragging the strip seeks to whatever frame sits under the playhead. Key frames only
-    // while moving (fast), then one exact seek where the finger stops.
+    // Dragging the strip seeks to whatever frame sits under the playhead, exactly, on every
+    // move. Scrubbing mode makes that keep up: it drops seeks overtaken by newer ones, decodes
+    // forward within a group of pictures instead of flushing back to its key frame, and holds
+    // playback (and audio) until it ends. Key-frame-only seeks with a flush each, as before,
+    // showed a new picture only every second or two of video.
+    //
+    // A new seek waits until the last one's picture is out (or SEEK_PATIENCE_MS passes): sent
+    // every frame, each seek cut the previous decode short and pictures came 3-5 times a second.
+    // While the picture on screen lags the target, the nearest [ScrubPreviews] copy covers it.
     LaunchedEffect(player, scrubbing) {
-        if (!scrubbing) return@LaunchedEffect
-        val wasPlaying = player.isPlaying
-        player.pause()
-        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
-        var target = player.currentPosition
+        if (!scrubbing) {
+            // Done: the preview stays until the exact picture is out to replace it.
+            if (preview != null) {
+                withTimeoutOrNull(PREVIEW_HOLD_MS) {
+                    while (abs(shownUs.get() / 1000 - player.currentPosition) > SEEK_ARRIVED_MS) withFrameNanos {}
+                }
+                preview = null
+            }
+            return@LaunchedEffect
+        }
+        // Paused (or finished) stays paused; playing carries on from the new spot afterwards.
+        if (!player.isPlaying) player.pause()
+        player.setScrubbingModeEnabled(true)
+        var sent = -1L
+        var sentAt = 0L
         try {
-            snapshotFlow { strip.value }.collect { v ->
-                if (strip.maxValue > 0 && duration > 0) {
-                    target = duration * v / strip.maxValue
-                    player.seekTo(target)
+            while (isActive) {
+                withFrameNanos { now ->
+                    if (strip.maxValue <= 0 || duration <= 0) return@withFrameNanos
+                    val target = duration * strip.value / strip.maxValue
                     if (target / 1000 != position / 1000) position = target
+                    val shownMs = shownUs.get() / 1000
+                    // An exact seek shows the frame at or just before the target.
+                    val arrived = abs(shownMs - sent) <= SEEK_ARRIVED_MS
+                    val waited = (now - sentAt) / 1_000_000 >= SEEK_PATIENCE_MS
+                    if (target != sent && (sent < 0 || arrived || waited)) {
+                        player.seekTo(target)
+                        sent = target
+                        sentAt = now
+                    }
+                    // Same instance most frames, so this only recomposes when the copy changes.
+                    preview = if (abs(shownMs - target) > PREVIEW_GAP_MS) previews.near(target) else null
                 }
             }
         } finally {
-            player.setSeekParameters(SeekParameters.EXACT)
-            player.seekTo(target)
-            position = target
-            if (wasPlaying) player.play()
+            // Wherever the strip came to rest, even if the last move was still held back.
+            val target = if (strip.maxValue > 0 && duration > 0) duration * strip.value / strip.maxValue else sent
+            if (target >= 0 && target != sent) player.seekTo(target)
+            if (target >= 0) position = target
+            player.setScrubbingModeEnabled(false)
         }
     }
     // Like every video app: the controls fade out once playback runs on its own.
@@ -295,47 +415,21 @@ fun VideoPlayer(
         }
     }
 
-    // The glass controls refract the video playing behind them.
-    val backdrop = rememberSharedBackdrop(Color.Black)
-    // The HUD stays composed and only fades: composing it (filmstrip, buttons, glass) on
-    // every show cost a ~30 ms frame, a visible stutter in the video right as it appeared.
-    val hud by animateFloatAsState(
-        if (controlsVisible) 1f else 0f,
-        tween(if (controlsVisible) 150 else 200),
-        label = "hud_alpha",
-    )
-    // Record the video for the glass controls only while they show or fade.
-    val showing by rememberUpdatedState(controlsVisible)
-    val hudOn by remember { derivedStateOf { showing || hud > 0f } }
-
-    Box(modifier.fillMaxSize()) {
-        BackdropSource(backdrop, enabled = { hudOn }, modifier = Modifier.fillMaxSize()) {
-            ZoomBox(resetKey = item.id, isCurrentPage = true, onTap = { onControlsChange(!controlsVisible) }) {
-                Box(Modifier.aspectRatio(aspect)) {
-                    AndroidView(
-                        factory = { ctx -> TextureView(ctx).also { textureView[0] = it; player.setVideoTextureView(it) } },
-                        onRelease = { player.clearVideoTextureView(it); textureView[0] = null },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    // The still stays on top until the first frame is drawn, so opening a video never flashes black.
-                    if (!firstFrame) {
-                        AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-                    }
-                }
-            }
-        }
-
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset)) {
-            Column(Modifier.fillMaxWidth().graphicsLayer { alpha = hud }) {
+    // Remembered once and read through state, so handing it over doesn't recompose the
+    // viewer's overlay on every recomposition of the player.
+    val visible by rememberUpdatedState(controlsVisible)
+    val controls: @Composable (Backdrop) -> Unit = remember(player) {
+        { backdrop ->
+            Column(Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CircleButton(backdrop, Icons.Outlined.PhotoCamera, "Capture frame", controlsVisible, onClick = ::captureFrame)
+                    CircleButton(backdrop, Icons.Outlined.PhotoCamera, "Capture frame", visible, onClick = ::captureFrame)
                     Spacer(Modifier.weight(1f))
                     PlayPill(
                         backdrop = backdrop,
-                        enabled = controlsVisible,
+                        enabled = visible,
                         icon = when {
                             // Scrubbing to the very end leaves the player paused there, not "ended".
                             ended || (!isPlaying && duration > 0 && position >= duration - 1000) -> Icons.Rounded.Replay
@@ -351,17 +445,38 @@ fun VideoPlayer(
                         backdrop,
                         if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
                         if (muted) "Unmute" else "Mute",
-                        controlsVisible,
+                        visible,
                     ) {
                         muted = !muted
                         player.volume = if (muted) 0f else 1f
                     }
                 }
-                Filmstrip(frames, strip, enabled = controlsVisible)
+                Filmstrip(frames, strip, enabled = visible, onScrub = { scrubbing = it })
             }
-            // While hidden, a tap where the controls sit brings them back instead of hitting them.
-            if (!controlsVisible) {
-                Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { onControlsChange(true) } })
+        }
+    }
+    DisposableEffect(controlsHost, controls) {
+        controlsHost.content = controls
+        onDispose { if (controlsHost.content === controls) controlsHost.content = null }
+    }
+
+    ZoomBox(
+        resetKey = item.id,
+        isCurrentPage = true,
+        onTap = { onControlsChange(!controlsVisible) },
+        modifier = modifier,
+        doubleTapZoom = false,
+    ) {
+        Box(Modifier.aspectRatio(aspect)) {
+            AndroidView(
+                factory = { ctx -> TextureView(ctx).also { textureView[0] = it; player.setVideoTextureView(it) } },
+                onRelease = { player.clearVideoTextureView(it); textureView[0] = null },
+                modifier = Modifier.fillMaxSize(),
+            )
+            preview?.let { Image(it, null, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize()) }
+            // The still stays on top until the first frame is drawn, so opening a video never flashes black.
+            if (!firstFrame) {
+                AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             }
         }
     }
@@ -449,16 +564,39 @@ private fun rememberFilmstripFrames(item: MediaItem, duration: Long): List<Image
 /**
  * Row of frames under a fixed centre playhead. Half a screen of padding on each side lets
  * the first and last frame reach the playhead, so scroll 0..max maps to 0..duration.
+ *
+ * Dragged by hand rather than through horizontalScroll: the strip runs [SCRUB_SPEED] times
+ * the finger and glides on after a flick. [onScrub] is true from touch until the glide stops.
+ * Never dispatching nested scroll, reaching either end can't start swiping the pager either.
  */
 @Composable
-private fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState, enabled: Boolean) {
+private fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState, enabled: Boolean, onScrub: (Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val fling = ScrollableDefaults.flingBehavior()
+    val glide = remember { arrayOfNulls<Job>(1) }
+    val drag = rememberDraggableState { state.dispatchRawDelta(-it * SCRUB_SPEED) }
     BoxWithConstraints(Modifier.fillMaxWidth().height(STRIP_HEIGHT + 8.dp), contentAlignment = Alignment.Center) {
         val half = maxWidth / 2
         Row(
             Modifier
                 .fillMaxSize()
-                .nestedScroll(KeepScroll)
-                .horizontalScroll(state, enabled = enabled, flingBehavior = NoFling)
+                .draggable(
+                    drag,
+                    Orientation.Horizontal,
+                    enabled = enabled,
+                    onDragStarted = {
+                        glide[0]?.cancel()
+                        onScrub(true)
+                    },
+                    onDragStopped = { velocity ->
+                        glide[0] = scope.launch {
+                            state.scroll { with(fling) { performFling(-velocity * SCRUB_SPEED) } }
+                            // Not in a finally: a glide cut short by the next touch keeps scrubbing on.
+                            onScrub(false)
+                        }
+                    },
+                )
+                .horizontalScroll(state, enabled = false)
                 .padding(vertical = 4.dp),
         ) {
             Spacer(Modifier.width(half))
