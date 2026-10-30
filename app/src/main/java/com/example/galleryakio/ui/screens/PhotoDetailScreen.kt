@@ -65,6 +65,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Velocity
 import kotlin.math.abs
 import androidx.compose.runtime.withFrameNanos
@@ -244,7 +246,20 @@ fun PhotoDetailScreen(
     val videoControls = remember { VideoControlsHost() }
     val backdrop = rememberLayerBackdrop {
         drawRect(Color.Black)
-        drawContent()
+        val still = videoControls.backdropStill
+        if (still == null) {
+            drawContent()
+        } else {
+            // Where the video sits when not zoomed: under a blur that is close enough.
+            val fit = minOf(size.width / still.width, size.height / still.height)
+            val width = still.width * fit
+            val height = still.height * fit
+            drawImage(
+                still,
+                dstOffset = IntOffset(((size.width - width) / 2).toInt(), ((size.height - height) / 2).toInt()),
+                dstSize = IntSize(width.toInt(), height.toInt()),
+            )
+        }
     }
     val latestOnBack by rememberUpdatedState(onBack)
     // Remembered once: pointerInput restarts its gesture whenever its lambda changes, and a
@@ -300,8 +315,10 @@ fun PhotoDetailScreen(
             if (item.isVideo) {
                 VideoPlayer(
                     item = item,
-                    isCurrentPage = isCurrent,
-                    closing = closing,
+                    // Once the page has come to rest, not halfway through the swipe as currentPage
+                    // does: releasing one player and building the next stalled the motion ~100 ms.
+                    isCurrentPage = page == pager.settledPage,
+                    leaving = closing || page != pager.currentPage,
                     rememberPosition = settings.rememberVideoPosition,
                     loop = settings.videoLoop,
                     onLoopChange = viewModel.settingsRepo::setVideoLoop,

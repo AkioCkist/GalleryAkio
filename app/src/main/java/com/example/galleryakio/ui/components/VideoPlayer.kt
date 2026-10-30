@@ -157,6 +157,8 @@ private const val PREVIEW_CACHE_BYTES = 24 shl 20
 private const val PREVIEW_GAP_MS = 150L
 /** After a scrub, how long a preview may wait for the exact picture to replace it. */
 private const val PREVIEW_HOLD_MS = 1_500L
+/** How often the glass catches up with a moving picture: each time costs one slower frame. */
+private const val GLASS_REFRESH_MS = 1_000L
 private val FRAME_WIDTH = 56.dp
 private val STRIP_HEIGHT = 52.dp
 private val CONTROL_SIZE = 36.dp
@@ -172,6 +174,13 @@ private const val SCRUB_SPEED = 1.34f
  */
 class VideoControlsHost {
     var content by mutableStateOf<(@Composable (Backdrop) -> Unit)?>(null)
+
+    /**
+     * While set, the viewer's glass bends this copy of the picture instead of the live video.
+     * With the video in its backdrop every glass control was blurred again on each video frame
+     * (20 ms of GPU, dropping video frames); over a still one their blur stays cached.
+     */
+    var backdropStill by mutableStateOf<ImageBitmap?>(null)
 }
 
 /**
@@ -225,7 +234,8 @@ private class ScrubPreviews {
 fun VideoPlayer(
     item: MediaItem,
     isCurrentPage: Boolean,
-    closing: Boolean,
+    /** The viewer is closing or a swipe is past halfway to another page. */
+    leaving: Boolean,
     rememberPosition: Boolean,
     loop: Boolean,
     onLoopChange: (Boolean) -> Unit,
@@ -465,12 +475,12 @@ fun VideoPlayer(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Leaving: drop the decoder now, on the playback thread, while the thumbnail flies back.
-    // Waiting for the end of the motion made taking the surface away and release() block the
-    // main thread together for some 70 ms, a visible hitch just as the grid came back.
-    // A back gesture can still be cancelled, hence the way back.
-    LaunchedEffect(player, closing) {
-        if (closing) player.stop()
+    // Leaving: drop the decoder now, on the playback thread, during the motion. Waiting for its
+    // end made taking the surface away and release() block the main thread together for some
+    // 70 ms, a visible hitch just as the grid or the next video came in.
+    // A back gesture or a swipe can still be cancelled, hence the way back.
+    LaunchedEffect(player, leaving) {
+        if (leaving) player.stop()
         else if (player.playbackState == Player.STATE_IDLE) player.prepare()
     }
 
@@ -541,6 +551,22 @@ fun VideoPlayer(
             if (target >= 0) position = target
             player.setScrubbingModeEnabled(false)
         }
+    }
+    // While the picture moves under the controls. Left in place as they fade out, when the
+    // backdrop stops being recorded anyway; a stopped picture costs nothing live, and looks sharper.
+    LaunchedEffect(player, controlsVisible, isPlaying, scrubbing) {
+        if (!isPlaying && !scrubbing) {
+            controlsHost.backdropStill = null
+            return@LaunchedEffect
+        }
+        if (!controlsVisible) return@LaunchedEffect
+        while (isActive) {
+            previews.near(player.currentPosition)?.let { controlsHost.backdropStill = it }
+            delay(GLASS_REFRESH_MS)
+        }
+    }
+    DisposableEffect(player, controlsHost) {
+        onDispose { controlsHost.backdropStill = null }
     }
     // Like every video app: the controls fade out once playback runs on its own.
     LaunchedEffect(controlsVisible, isPlaying, scrubbing) {

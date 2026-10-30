@@ -232,16 +232,16 @@ fun SettingsScreen(viewModel: GalleryViewModel, onBack: () -> Unit) {
                 SettingCard(painterResource(R.drawable.info), "Gallery Akio", "Version ${BuildConfig.VERSION_NAME}")
             }
             item {
-                SettingCard(painterResource(R.drawable.contact), "Support", "help.appslab@gmail.com", onClick = {
-                    context.openSafely(Intent(Intent.ACTION_SENDTO, "mailto:help.appslab@gmail.com".toUri()).apply {
+                SettingCard(painterResource(R.drawable.contact), "Support", "doublekill0102030405@gmail.com", onClick = {
+                    context.openSafely(Intent(Intent.ACTION_SENDTO, "mailto:doublekill0102030405@gmail.com".toUri()).apply {
                         putExtra(Intent.EXTRA_SUBJECT, "Gallery Akio Support")
                     }, "No email app found")
                 })
             }
             item {
-                SettingCard(painterResource(R.drawable.secure), "Privacy policy", null, onClick = {
+                SettingCard(painterResource(R.drawable.github), "GitHub Repository", null, onClick = {
                     context.openSafely(
-                        Intent(Intent.ACTION_VIEW, "https://www.termsfeed.com/live/a9edf645-e46c-4e2d-9305-2b074a6a52c0".toUri()),
+                        Intent(Intent.ACTION_VIEW, "https://github.com/AkioCkist/GalleryAkio".toUri()),
                         "Unable to open privacy policy",
                     )
                 })
