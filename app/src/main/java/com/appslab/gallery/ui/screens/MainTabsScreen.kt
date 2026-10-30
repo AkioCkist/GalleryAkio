@@ -64,7 +64,7 @@ import com.appslab.gallery.ui.components.NAV_BAR_HEIGHT
 import com.appslab.gallery.ui.components.NAV_BAR_MARGIN
 import com.appslab.gallery.ui.components.NavTab
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.backdrops.layerBackdrop
+import com.appslab.gallery.ui.components.BackdropSource
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
@@ -148,9 +148,12 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
             LocalHeaderPadding provides 4.dp,
             LocalBottomBarPadding provides NAV_BAR_HEIGHT + NAV_BAR_MARGIN,
         ) {
+            // Only recorded while the bar is (partly) on screen: scrolling down slides it away,
+            // and the grid then draws once per frame instead of also into the backdrop layer.
+            BackdropSource(backdrop, enabled = { hidden < 1f }, modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().nestedScroll(hideOnScroll).layerBackdrop(backdrop),
+                modifier = Modifier.fillMaxSize().nestedScroll(hideOnScroll),
                 // Only the visible tab stays composed: each tab is a full grid, and keeping a
                 // second one alive doubled the work of coming back from the viewer.
                 beyondViewportPageCount = 0,
@@ -161,6 +164,7 @@ fun MainTabsScreen(viewModel: GalleryViewModel, navController: NavController) {
                     TAB_ALBUMS -> AlbumsScreen(viewModel, navController)
                     else -> SearchScreen(viewModel, navController)
                 }
+            }
             }
         }
         // Content scrolls under the transparent status bar; fade it so the clock stays readable.

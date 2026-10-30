@@ -1,6 +1,9 @@
 package com.appslab.gallery
 
 import android.app.Application
+import androidx.compose.runtime.Composer
+import androidx.compose.runtime.tooling.ComposeStackTraceMode
+import kotlinx.coroutines.Dispatchers
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -15,6 +18,9 @@ import com.appslab.gallery.data.ThumbnailFetcher
 import coil3.memory.MemoryCache
 import com.appslab.gallery.data.search.MediaIndexer
 
+/** Thumbnails decoded at once; see newImageLoader. */
+private const val THUMBNAIL_DECODERS = 3
+
 class GalleryApplication : Application(), SingletonImageLoader.Factory {
     lateinit var mediaRepository: MediaRepository
         private set
@@ -25,6 +31,9 @@ class GalleryApplication : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        // Release builds still record composition stack traces (group keys) by default, which
+        // showed up as ~7% of the main thread while scrolling the grid. Only debug needs them.
+        if (!BuildConfig.DEBUG) Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.None)
         mediaRepository = MediaRepository(this)
         settingsRepository = SettingsRepository(this)
     }
@@ -40,5 +49,9 @@ class GalleryApplication : Application(), SingletonImageLoader.Factory {
             // default so scrolling back and returning from the viewer hits memory, not disk.
             .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.3).build() }
             .crossfade(150)
+            // Thumbnails are decoded inside the fetcher (MediaStore's loadThumbnail). Left to the
+            // default pool, a fling started one decode per core and starved the UI and render
+            // threads of CPU; a few at a time keep up with scrolling.
+            .fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(THUMBNAIL_DECODERS))
             .build()
 }

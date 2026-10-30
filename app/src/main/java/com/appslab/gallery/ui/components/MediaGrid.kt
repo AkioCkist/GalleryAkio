@@ -363,6 +363,12 @@ private val entryCache = RecentCache<EntryKey, List<Entry>>(capacity = MAX_COLUM
 private const val DAY_MS = 24L * 60 * 60 * 1000
 const val MIN_COLUMNS = 1
 const val MAX_COLUMNS = 6
+/** The fast scroller only shows on lists at least this many screens long. */
+private const val FAST_SCROLL_MIN_SCREENS = 4
+
+/** First item to show for a fast-scroll fraction: the inverse of scrollFraction(). */
+private fun fractionToIndex(f: Float, total: Int, visible: Int) =
+    (f * (total - visible).coerceAtLeast(0)).roundToInt().coerceIn(0, (total - 1).coerceAtLeast(0))
 
 /** The grid's usual padding, starting [top] down (e.g. below a floating glass header). */
 fun gridPadding(top: Dp) = PaddingValues(start = 8.dp, end = 8.dp, top = top, bottom = 100.dp)
@@ -581,6 +587,11 @@ fun MediaGrid(
             staggeredState.scrollToItem(index)
             staggeredState.scrollBy(-(y - topPaddingPx))
         }
+        // Date of every lazy item (headers and tiles), for the fast scroller's bubble.
+        val itemLabels = remember(groups) {
+            buildList { groups.forEach { g -> if (g.label.isNotEmpty()) add(g.label); repeat(g.items.size) { add(g.label) } } }
+        }
+        Box {
         LazyVerticalStaggeredGrid(
             columns = StaggeredGridCells.Fixed(liveColumns),
             state = staggeredState,
@@ -595,6 +606,17 @@ fun MediaGrid(
                     tile(item, Modifier.fillMaxWidth().aspectRatio(item.ratio()), cellPx)
                 }
             }
+        }
+        FastScroller(
+            progress = { staggeredState.scrollFraction() },
+            scrolling = { staggeredState.isScrollInProgress },
+            enabled = { staggeredState.layoutInfo.let { it.totalItemsCount > it.visibleItemsInfo.size * FAST_SCROLL_MIN_SCREENS } },
+            onDrag = { f -> staggeredState.requestScrollToItem(fractionToIndex(f, staggeredState.layoutInfo.totalItemsCount, staggeredState.layoutInfo.visibleItemsInfo.size)) },
+            label = { f -> itemLabels.getOrNull(fractionToIndex(f, itemLabels.size, staggeredState.layoutInfo.visibleItemsInfo.size))?.ifEmpty { null } },
+            topInset = padding.calculateTopPadding(),
+            bottomInset = padding.calculateBottomPadding(),
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
         }
         return
     }
@@ -730,6 +752,20 @@ fun MediaGrid(
                 }
             }
         }
+        val entryLabels = remember(entries) {
+            var current = ""
+            entries.map { e -> (if (e is Entry.Header) e.group.label else current).also { current = it } }
+        }
+        FastScroller(
+            progress = { listState.scrollFraction() },
+            scrolling = { listState.isScrollInProgress },
+            enabled = { morph == null && listState.layoutInfo.let { it.totalItemsCount > it.visibleItemsInfo.size * FAST_SCROLL_MIN_SCREENS } },
+            onDrag = { f -> listState.requestScrollToItem(fractionToIndex(f, listState.layoutInfo.totalItemsCount, listState.layoutInfo.visibleItemsInfo.size)) },
+            label = { f -> entryLabels.getOrNull(fractionToIndex(f, entryLabels.size, listState.layoutInfo.visibleItemsInfo.size))?.ifEmpty { null } },
+            topInset = padding.calculateTopPadding(),
+            bottomInset = padding.calculateBottomPadding(),
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
         morph?.let { m ->
             // Frozen for the whole pinch: the column count changes under the morph at the end,
             // and re-requesting every thumbnail then would blank the tiles for a frame.
@@ -798,7 +834,9 @@ private fun MediaItemCard(
                 },
             ),
     ) {
-        MediaThumbnail(item, cellSizePx, Modifier.fillMaxSize().clip(shape))
+        // The card already clips to the shape; a second clip here was a second rounded clip
+        // per tile for the GPU on every frame of scrolling.
+        MediaThumbnail(item, cellSizePx, Modifier.fillMaxSize())
         if (isFavorite) {
             Box(
                 Modifier

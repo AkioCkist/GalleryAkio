@@ -25,6 +25,9 @@
         android:theme="@style/Theme.Gallery"
         android:requestLegacyExternalStorage="true">
 
+        <!-- Lets `simpleperf` profile release builds over adb; changes nothing for users. -->
+        <profileable android:shell="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
