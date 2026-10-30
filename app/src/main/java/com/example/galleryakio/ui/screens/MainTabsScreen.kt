@@ -58,8 +58,8 @@ import com.example.galleryakio.R
 import com.example.galleryakio.data.SortOrder
 import com.example.galleryakio.ui.GalleryViewModel
 import com.example.galleryakio.ui.Routes
-import com.example.galleryakio.ui.components.GlassCircleButton
 import com.example.galleryakio.ui.components.GlassNavBar
+import com.example.galleryakio.ui.components.GlassNavButton
 import com.example.galleryakio.ui.components.NAV_BAR_HEIGHT
 import com.example.galleryakio.ui.components.NAV_BAR_MARGIN
 import com.example.galleryakio.ui.components.NavTab
@@ -73,21 +73,21 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Photo
+import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Photo
-import androidx.compose.material.icons.rounded.PhotoLibrary
-import androidx.compose.material.icons.rounded.PlayCircle
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.ui.graphics.Brush
 import com.example.galleryakio.ui.theme.CqMono
 import com.example.galleryakio.ui.theme.LocalCustomColors
 import kotlinx.coroutines.launch
 
 private val Tabs = listOf(
-    NavTab("PHOTOS", Icons.Rounded.Photo),
-    NavTab("VIDEOS", Icons.Rounded.PlayCircle),
-    NavTab("ALBUMS", Icons.Rounded.PhotoLibrary),
-    NavTab("SEARCH", Icons.Rounded.Search),
+    NavTab("PHOTOS", Icons.Outlined.Photo),
+    NavTab("VIDEOS", Icons.Outlined.PlayCircle),
+    NavTab("ALBUMS", Icons.Outlined.PhotoLibrary),
+    NavTab("SEARCH", Icons.Outlined.Search),
 )
 private const val TAB_PHOTOS = 0
 private const val TAB_VIDEOS = 1
@@ -204,7 +204,7 @@ private fun ThreeDotMenu(viewModel: GalleryViewModel, navController: NavControll
     var expanded by remember { mutableStateOf(false) }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     Box {
-        GlassCircleButton(backdrop, darkMode, Icons.Rounded.MoreVert, "More options", onClick = { expanded = true })
+        GlassNavButton(backdrop, darkMode, Icons.Rounded.MoreVert, "More options", onClick = { expanded = true })
         GlassMenu(expanded = expanded, onDismiss = { expanded = false }) {
             if (tab == TAB_PHOTOS || tab == TAB_VIDEOS) {
                 val newest = settings.sortOrder == SortOrder.DESCENDING
