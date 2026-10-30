@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.appslab.gallery"
+    namespace = "com.example.galleryakio"
     compileSdk {
         version = release(37)
     }
