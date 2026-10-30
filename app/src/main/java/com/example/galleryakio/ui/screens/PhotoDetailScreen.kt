@@ -14,6 +14,7 @@ import com.example.galleryakio.data.canReadMediaLocation
 import com.example.galleryakio.data.readMediaDetails
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
@@ -160,6 +161,7 @@ fun PhotoDetailScreen(
     initialId: Long,
     source: MediaSource,
     onBack: () -> Unit,
+    onEdit: (MediaItem) -> Unit,
     /** The navigation transition entering / leaving this screen, which drives the open and close motion. */
     transition: Transition<EnterExitState>? = null,
 ) {
@@ -216,6 +218,8 @@ fun PhotoDetailScreen(
     val progress = { progressState?.value ?: 1f }
     val closing = transition?.targetState == EnterExitState.PostExit
     val inPip by rememberInPictureInPicture()
+    // Stops the players right away: they'd play on, over the editor's, until the screen has faded.
+    var editing by remember { mutableStateOf(false) }
     val opened = transition == null || transition.currentState == EnterExitState.Visible
     // The grid's thumbnail is what moves; without one in memory the viewer just fades.
     val thumb = remember(current.id) { SingletonImageLoader.get(context).memoryCache?.let { cachedThumbnail(it, current.id, 1024) } }
@@ -327,7 +331,7 @@ fun PhotoDetailScreen(
                     preloadDelayMs = if (page > pager.settledPage) 400L else 700L,
                     isVisible = isVisible,
                     isAudible = page == pager.currentPage,
-                    leaving = closing,
+                    leaving = closing || editing,
                     rememberPosition = settings.rememberVideoPosition,
                     loop = settings.videoLoop,
                     onLoopChange = viewModel.settingsRepo::setVideoLoop,
@@ -389,6 +393,10 @@ fun PhotoDetailScreen(
                     onFavorite = { viewModel.settingsRepo.toggleFavorite(current.id) },
                     onDetails = { showInfo = true },
                     onShare = { shareItems(context, listOf(current)) },
+                    onEdit = {
+                        editing = true
+                        onEdit(current)
+                    },
                     onDelete = { confirmTrash = true },
                 )
             }
@@ -608,6 +616,7 @@ private fun BottomBar(
     onFavorite: () -> Unit,
     onDetails: () -> Unit,
     onShare: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -625,6 +634,7 @@ private fun BottomBar(
                 tint = if (isFavorite) Color(0xFFFF4D4D) else Color.White,
                 onClick = onFavorite,
             )
+            BarButton(rememberVectorPainter(Icons.Rounded.Edit), "Edit", onClick = onEdit)
             BarButton(painterResource(R.drawable.info), "Details", onClick = onDetails)
             BarButton(painterResource(R.drawable.share), "Share", onClick = onShare)
             BarButton(painterResource(R.drawable.delete), "Delete", onClick = onDelete)

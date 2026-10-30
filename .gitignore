@@ -4,8 +4,11 @@
 /.idea
 .DS_Store
 /build
+/editor/build
 /app/build
 /captures
+/lib/cropper/build
+/lib/gesture/build
 .externalNativeBuild
 .cxx
 local.properties

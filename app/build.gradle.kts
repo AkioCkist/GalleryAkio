@@ -17,6 +17,8 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Phones only: ML Kit alone adds tens of MB for each ABI it ships.
+        ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a") }
     }
 
     buildTypes {
@@ -37,10 +39,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // GPUImage needs it.
+        isCoreLibraryDesugaringEnabled = true
     }
 }
 
 dependencies {
+    implementation(project(":editor"))
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)

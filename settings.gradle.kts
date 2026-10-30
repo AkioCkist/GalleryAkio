@@ -19,8 +19,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Only for ImageToolbox's GPUImage build, and pinned and checksummed (gradle/verification-metadata.xml).
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.T8RIN.ImageToolboxLibs") }
+        }
     }
 }
 
 rootProject.name = "GalleryAkio"
 include(":app")
+include(":editor")
+include(":lib:cropper")
+include(":lib:gesture")

@@ -10,6 +10,17 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.animation.EnterExitState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.currentBackStackEntryAsState
+import com.example.galleryakio.editor.EditorScreen
 import com.example.galleryakio.ui.components.LocalGlassDark
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -59,12 +70,15 @@ object Routes {
     const val FAVORITES = "favorite"
     const val ALBUM = "album/{path}"
     const val PHOTO = "photoDetail/{id}?source={source}"
+    const val EDITOR = "editor/{id}"
 
     fun album(relativePath: String) = "album/${Uri.encode(relativePath)}"
     fun photo(id: Long, source: MediaSource) = "photoDetail/$id?source=${Uri.encode(source.encode())}"
+    fun editor(id: Long) = "editor/$id"
 }
 
 private const val NAV_MS = 220
+private const val KEY_FROM_EDITOR = "from_editor"
 
 @Composable
 fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController = rememberNavController()) {
@@ -104,6 +118,13 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
             enterTransition = { EnterTransition.None },
             popExitTransition = { ExitTransition.None },
         ) { entry ->
+            // To and from the editor the viewer simply stays and fades: its own motion would fly
+            // the picture back to its grid tile, which isn't where the user is going.
+            val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+            var fromEditor by remember { mutableStateOf(entry.savedStateHandle.remove<Boolean>(KEY_FROM_EDITOR) == true) }
+            LaunchedEffect(transition.currentState, transition.targetState) {
+                if (transition.currentState == EnterExitState.Visible && transition.targetState == EnterExitState.Visible) fromEditor = false
+            }
             // The viewer is always dark, whatever the app theme: so are its menus and dialogs.
             CompositionLocalProvider(LocalGlassDark provides true) {
                 PhotoDetailScreen(
@@ -111,7 +132,32 @@ fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController
                     initialId = entry.arguments?.getLong("id") ?: 0L,
                     source = MediaSource.decode(entry.arguments?.getString("source") ?: "all"),
                     onBack = navController::popBackStack,
-                    transition = transition,
+                    onEdit = { item ->
+                        entry.savedStateHandle[KEY_FROM_EDITOR] = true
+                        navController.navigate(Routes.editor(item.id))
+                    },
+                    transition = if (fromEditor || currentRoute == Routes.EDITOR) null else transition,
+                )
+            }
+        }
+        composable(Routes.EDITOR, arguments = listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+            val context = LocalContext.current
+            val library by viewModel.library.collectAsStateWithLifecycle()
+            val id = entry.arguments?.getLong("id") ?: 0L
+            // Kept once found: saving adds to the library, which must not restart the editor.
+            val item = remember(id) { library.all.firstOrNull { it.id == id } }
+            if (item == null) {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            } else {
+                EditorScreen(
+                    uri = item.uri,
+                    displayName = item.displayName,
+                    isVideo = item.isVideo,
+                    onClose = navController::popBackStack,
+                    onSaved = {
+                        Toast.makeText(context, if (item.isVideo) "Saved to Movies/Gallery" else "Saved to Pictures/Gallery", Toast.LENGTH_SHORT).show()
+                        navController.popBackStack()
+                    },
                 )
             }
         }

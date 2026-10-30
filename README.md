@@ -7,6 +7,11 @@
 - Package / namespace / applicationId: `com.example.galleryakio` (cài song song được với bản cũ `com.appslab.gallery`)
 - AGP 9.4.1, Kotlin 2.4.10, compileSdk 37, targetSdk 36, minSdk 24, Java 17
 
+## Editor
+
+Module `:editor` sửa ảnh và video, mở từ nút Edit trên HUD của viewer; luôn lưu thành file mới.
+Cropper và GPUImage lấy từ [ImageToolbox](https://github.com/T8RIN/ImageToolbox), xem `lib/README.md` và `NOTICE`. Video xuất bằng Media3 Transformer.
+
 ## Yêu cầu
 
 - Android Studio (dùng JDK đi kèm `jbr`) hoặc JDK 17+

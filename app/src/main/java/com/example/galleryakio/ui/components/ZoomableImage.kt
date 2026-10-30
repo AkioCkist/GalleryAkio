@@ -45,7 +45,26 @@ private const val MAX_SCALE = 5f
 private const val DOUBLE_TAP_SCALE = 2.5f
 private val DOUBLE_TAP_SPEC = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
 
-/** Pinch / double-tap zoomable photo, decoded at screen size with the grid thumbnail as placeholder. */
+/** Above this a photo counts as zoomed in. */
+internal const val ZOOMED_SCALE = 1.01f
+
+/** Where [ZoomBox] is zoomed to. [pixelWidth] and [pixelHeight] let a photo zoom in to its own pixels. */
+class ZoomState(private val pixelWidth: Int = 0, private val pixelHeight: Int = 0) {
+    val scale = Animatable(1f)
+    var offset by mutableStateOf(Offset.Zero)
+    var size by mutableStateOf(IntSize.Zero)
+
+    val maxScale: Float
+        get() {
+            if (pixelWidth <= 0 || pixelHeight <= 0 || size.width == 0 || size.height == 0) return MAX_SCALE
+            return maxOf(MAX_SCALE, pixelWidth.toFloat() / size.width, pixelHeight.toFloat() / size.height)
+        }
+}
+
+/**
+ * Pinch / double-tap zoomable photo, decoded at screen size with the grid thumbnail as placeholder.
+ * [SharpTiles] brings in the file's own pixels for the part on screen while zoomed.
+ */
 @Composable
 fun ZoomableImage(
     item: MediaItem,
@@ -63,13 +82,16 @@ fun ZoomableImage(
             .placeholderMemoryCacheKey(cachedThumbnailKey(context, item.id))
             .build()
     }
-    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier) {
+    val tiled = !item.isGif && !item.isSvg
+    val zoom = remember(item.id, tiled) { if (tiled) ZoomState(item.width, item.height) else ZoomState() }
+    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier, zoom = zoom) {
         AsyncImage(
             model = request,
             contentDescription = item.displayName,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
+        if (tiled) SharpTiles(item.uri, zoom, isCurrentPage)
     }
 }
 
@@ -92,15 +114,16 @@ fun ZoomBox(
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
     onDoubleTap: (() -> Unit)? = null,
+    zoom: ZoomState = remember { ZoomState() },
     content: @Composable BoxScope.() -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
     val doubleTap by rememberUpdatedState(onDoubleTap)
     val doubleTapZooms = onDoubleTap == null
     val scope = rememberCoroutineScope()
-    val scale = remember { Animatable(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
-    var size by remember { mutableStateOf(IntSize.Zero) }
+    val scale = zoom.scale
+    var offset by zoom::offset
+    var size by zoom::size
 
     // Tell the viewer whether the photo on screen is zoomed (a swipe down then pans instead of closing).
     val zoomState = LocalViewerZoom.current
@@ -176,7 +199,7 @@ fun ZoomBox(
                             dragging = drift.getDistance() > viewConfiguration.touchSlop
                         }
                         if (dragging && (pressed > 1 || current > 1.01f) && !fingersChanged && centroid.isSpecified) {
-                            val newScale = (current * event.calculateZoom()).coerceIn(1f, MAX_SCALE)
+                            val newScale = (current * event.calculateZoom()).coerceIn(1f, zoom.maxScale)
                             val center = Offset(size.width / 2f, size.height / 2f)
                             // Keep the pinch point under the fingers.
                             val zoomed = (offset + center - centroid) * (newScale / current) - center + centroid
