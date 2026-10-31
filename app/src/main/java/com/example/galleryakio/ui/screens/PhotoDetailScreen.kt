@@ -174,6 +174,7 @@ fun PhotoDetailScreen(
             MediaSource.All -> library.visible
             MediaSource.Favorites -> viewModel.favorites()
             MediaSource.Videos -> library.visible.filter { it.isVideo }
+            MediaSource.External -> listOfNotNull(viewModel.externalItem)
             MediaSource.Custom -> library.all.associateBy { it.id }.let { byId -> viewModel.customList.mapNotNull { byId[it.id] } }
             is MediaSource.Album -> viewModel.albumItems(source.relativePath, settings.albumSortOrder)
         }
@@ -392,6 +393,7 @@ fun PhotoDetailScreen(
                 onDetails = { showInfo = true },
                 onRename = { renaming = true },
                 onAdvanced = { showAdvanced = true },
+                external = source == MediaSource.External,
             )
         }
         FadingOverlay({ overlay }, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
@@ -401,7 +403,8 @@ fun PhotoDetailScreen(
                 if (current.isVideo) {
                     if (controls != null) controls(backdrop) else Spacer(Modifier.height(VIDEO_CONTROLS_HEIGHT))
                 }
-                BottomBar(
+                // Not one of the library's: nothing to favourite, edit or trash.
+                if (source != MediaSource.External) BottomBar(
                     backdrop = backdrop,
                     isFavorite = current.id in settings.favoriteIds,
                     onFavorite = { viewModel.settingsRepo.toggleFavorite(current.id) },
@@ -540,6 +543,7 @@ private fun TopBar(
     onDetails: () -> Unit,
     onRename: () -> Unit,
     onAdvanced: () -> Unit,
+    external: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -577,10 +581,10 @@ private fun TopBar(
                 onClick = onRotate,
             )
         }
-        Box {
+        if (!external || item.isVideo) Box {
             GlassButton(backdrop, painterResource(R.drawable.more2), "More") { menu = true }
             GlassMenu(expanded = menu, onDismiss = { menu = false }) {
-                MoreItem(R.drawable.info, "DETAILS") { menu = false; onDetails() }
+                if (!external) MoreItem(R.drawable.info, "DETAILS") { menu = false; onDetails() }
                 if (item.isVideo) {
                     // Stays open on a tap: it steps through the choices and shows the one picked.
                     GlassMenuItem(rememberVectorPainter(Icons.AutoMirrored.Rounded.ExitToApp), "WHEN LEAVING", leaveAction.label) {
@@ -606,7 +610,7 @@ private fun TopBar(
                         openGoogleLens(context, item)
                     }
                 }
-                MoreItem(R.drawable.rename, "RENAME") { menu = false; onRename() }
+                if (!external) MoreItem(R.drawable.rename, "RENAME") { menu = false; onRename() }
             }
         }
     }

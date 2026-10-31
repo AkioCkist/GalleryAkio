@@ -29,9 +29,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.exifinterface.media.ExifInterface
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
+import coil3.request.maxBitmapSize
+import coil3.size.Size as CoilSize
+import com.example.galleryakio.data.developRaw
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -52,6 +59,9 @@ private const val SETTLE_MS = 50L
 
 /** A full screen of tiles is at most about 84 MB, so this also holds some of another zoom level. */
 private const val TILE_CACHE_BYTES = 128 * 1024 * 1024
+
+/** A photo read whole takes this much on its long side at most, some 64 MB of memory. RAW keeps its own size. */
+private const val WHOLE_MAX_PX = 4096
 
 /** A region decoder takes one call at a time anyway. */
 private val TILE_DISPATCHER = Dispatchers.IO.limitedParallelism(1)
@@ -149,6 +159,23 @@ private class TileSource(
     }
 }
 
+/** The whole file at up to [WHOLE_MAX_PX], once zoomed: slower to come in than tiles, and it stays. */
+@Composable
+private fun WholePicture(uri: Uri, raw: Boolean) {
+    val context = LocalContext.current
+    val request = remember(uri, raw) {
+        ImageRequest.Builder(context)
+            .data(uri)
+            .size(CoilSize.ORIGINAL)
+            .maxBitmapSize(CoilSize(WHOLE_MAX_PX, WHOLE_MAX_PX))
+            .memoryCacheKey("whole:$uri")
+            .apply { if (raw) developRaw() }
+            .crossfade(false)
+            .build()
+    }
+    AsyncImage(request, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+}
+
 /** Null for files the decoder can't read a part of (GIF, AVIF, ...): those just stay screen-sized. */
 private fun openTileSource(context: Context, uri: Uri): TileSource? = runCatching {
     val file = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
@@ -188,13 +215,16 @@ private fun orientationMatrix(exif: ExifInterface?, width: Int, height: Int): Ma
  * is replayed at its scale rather than rasterized first, so their extra pixels still reach the screen.
  */
 @Composable
-fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean) {
+fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean, raw: Boolean = false, developNow: Boolean = false) {
     val context = LocalContext.current
     val tiles = remember(uri) { mutableStateMapOf<Tile, Bitmap>() }
     var source by remember(uri) { mutableStateOf<TileSource?>(null) }
     var currentSample by remember(uri) { mutableStateOf(0) }
     val cache = remember(uri) { TileCache() }
     val zoomed by remember(zoom) { derivedStateOf { zoom.scale.value > ZOOMED_SCALE } }
+    // No reading it a part at a time: RAW, and what Android's region decoder doesn't take.
+    var whole by remember(uri) { mutableStateOf(false) }
+    if (developNow) whole = true
 
     DisposableEffect(cache) {
         val callbacks = object : ComponentCallbacks2 {
@@ -214,7 +244,11 @@ fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean) {
     LaunchedEffect(uri, isCurrentPage) {
         if (!isCurrentPage) return@LaunchedEffect
         snapshotFlow { zoomed }.first { it }
-        val opened = withContext(TILE_DISPATCHER) { openTileSource(context, uri) } ?: return@LaunchedEffect
+        val opened = if (raw) null else withContext(TILE_DISPATCHER) { openTileSource(context, uri) }
+        if (opened == null) {
+            whole = true
+            return@LaunchedEffect
+        }
         source = opened
         try {
             snapshotFlow { if (zoomed) opened.rangeFor(zoom.size, zoom.scale.value, zoom.offset) else null }
@@ -247,6 +281,10 @@ fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean) {
         }
     }
 
+    if (whole) {
+        WholePicture(uri, raw)
+        return
+    }
     val photo = source ?: return
     Canvas(Modifier.fillMaxSize()) {
         val fit = min(size.width / photo.width, size.height / photo.height)

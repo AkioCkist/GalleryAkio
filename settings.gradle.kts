@@ -21,7 +21,11 @@ dependencyResolutionManagement {
         mavenCentral()
         // Only for ImageToolbox's GPUImage build, and pinned and checksummed (gradle/verification-metadata.xml).
         maven("https://jitpack.io") {
-            content { includeGroup("com.github.T8RIN.ImageToolboxLibs") }
+            content {
+                includeGroup("com.github.T8RIN.ImageToolboxLibs")
+                // Its TIFF module's decoder.
+                includeGroup("com.github.T8RIN")
+            }
         }
     }
 }

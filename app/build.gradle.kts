@@ -65,6 +65,15 @@ dependencies {
     implementation(libs.backdrop)
     implementation(libs.coil.gif)
     implementation(libs.coil.video)
+    implementation(libs.coil.svg)
+    // What Android can't read by itself: RAW (LibRaw), TIFF, JPEG 2000, PSD, JPEG XL, animated PNG.
+    implementation(libs.toolbox.raw)
+    implementation(libs.toolbox.tiff)
+    implementation(libs.toolbox.jp2decoder)
+    implementation(libs.toolbox.psd)
+    implementation(libs.toolbox.apng)
+    // The version the RAW decoder brings along, whose native library has to be the same one.
+    implementation(libs.jxl.coder.libjxl)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)

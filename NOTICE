@@ -12,3 +12,8 @@ GNU General Public License v3.0. An app distributed with it has to meet that lic
 
 This app uses libVLC (https://www.videolan.org/vlc/libvlc.html) as
 org.videolan.android:libvlc-all, licensed under the GNU Lesser General Public License v2.1.
+
+This app reads image formats with libraries from ImageToolboxLibs
+(https://github.com/T8RIN/ImageToolboxLibs, Apache License 2.0), which include LibRaw (LGPL 2.1 / CDDL 1.0),
+OpenJPEG (BSD 2-Clause) and libtiff (libtiff licence), and with jxl-coder
+(https://github.com/awxkee/jxl-coder, Apache License 2.0 / BSD 3-Clause).

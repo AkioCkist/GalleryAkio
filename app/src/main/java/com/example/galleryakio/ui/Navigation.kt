@@ -44,10 +44,13 @@ sealed interface MediaSource {
     data object Videos : MediaSource
     /** Search results or a category: the list set in [GalleryViewModel.customList]. */
     data object Custom : MediaSource
+    /** A file another app opened with this one: [GalleryViewModel.externalItem]. */
+    data object External : MediaSource
     data class Album(val relativePath: String) : MediaSource
 
     fun encode(): String = when (this) {
         All -> "all"
+        External -> "external"
         Favorites -> "favorites"
         Videos -> "videos"
         Custom -> "custom"
@@ -57,6 +60,7 @@ sealed interface MediaSource {
     companion object {
         fun decode(s: String): MediaSource = when {
             s == "favorites" -> Favorites
+            s == "external" -> External
             s == "custom" -> Custom
             s == "videos" -> Videos
             s.startsWith("album:") -> Album(s.removePrefix("album:"))
@@ -84,6 +88,10 @@ private const val KEY_FROM_EDITOR = "from_editor"
 
 @Composable
 fun GalleryNavHost(viewModel: GalleryViewModel, navController: NavHostController = rememberNavController()) {
+    val opened = viewModel.externalItem
+    LaunchedEffect(opened) {
+        if (opened != null) navController.navigate(Routes.photo(opened.id, MediaSource.External))
+    }
     NavHost(
         navController = navController,
         startDestination = Routes.MAIN,

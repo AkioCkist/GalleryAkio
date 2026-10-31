@@ -43,6 +43,13 @@ media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.1.5" }
 toolbox-gpuimage = { group = "com.github.T8RIN.ImageToolboxLibs", name = "gpuimage", version.ref = "imageToolboxLibs" }
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
+toolbox-apng = { group = "com.github.T8RIN.ImageToolboxLibs", name = "apng", version.ref = "imageToolboxLibs" }
+toolbox-jp2decoder = { group = "com.github.T8RIN.ImageToolboxLibs", name = "jp2decoder", version.ref = "imageToolboxLibs" }
+toolbox-psd = { group = "com.github.T8RIN.ImageToolboxLibs", name = "psd", version.ref = "imageToolboxLibs" }
+toolbox-raw = { group = "com.github.T8RIN.ImageToolboxLibs", name = "raw-coder", version.ref = "imageToolboxLibs" }
+toolbox-tiff = { group = "com.github.T8RIN.ImageToolboxLibs", name = "tiff-coder", version.ref = "imageToolboxLibs" }
+jxl-coder-libjxl = { group = "io.github.awxkee", name = "jxl-coder-libjxl", version = "2.6.2" }
+coil-svg = { group = "io.coil-kt.coil3", name = "coil-svg", version.ref = "coil" }
 libvlc = { group = "org.videolan.android", name = "libvlc-all", version = "3.7.7" }
 nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version = "1.11.1-0.17.0" }
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }

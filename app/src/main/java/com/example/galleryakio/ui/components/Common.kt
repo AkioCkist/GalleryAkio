@@ -125,7 +125,7 @@ fun thumbnailRequest(context: Context, item: MediaItem, bucket: Int): ImageReque
         .data(
             when {
                 item.isVideo -> MediaThumb(item.uri, bucket)
-                bucket <= 512 -> MediaThumb(item.uri, bucket, minOf(item.width, item.height), item.dateModified)
+                bucket <= 512 -> MediaThumb(item.uri, bucket, minOf(item.width, item.height), item.dateModified, photo = true)
                 else -> item.uri
             },
         )

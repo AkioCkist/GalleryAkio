@@ -1,5 +1,8 @@
 package com.example.galleryakio.ui
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import android.app.Application
 import android.app.PendingIntent
 import androidx.lifecycle.AndroidViewModel
@@ -106,6 +109,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** List the photo viewer pages through for [MediaSource.Custom] (search results, categories). */
     var customList: List<MediaItem> = emptyList()
+
+    /** The file another app last opened with this one. */
+    var externalItem by mutableStateOf<MediaItem?>(null)
 
     fun reshuffle() {
         randomSeed.value = Random.nextLong()

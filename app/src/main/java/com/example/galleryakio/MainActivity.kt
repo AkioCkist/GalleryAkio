@@ -2,9 +2,12 @@ package com.example.galleryakio
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -44,6 +47,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.CompositionLocalProvider
+import com.example.galleryakio.data.MediaItem
+import com.example.galleryakio.data.MediaType
 import com.example.galleryakio.ui.GalleryNavHost
 import com.example.galleryakio.ui.components.GlassOverlayHost
 import com.example.galleryakio.ui.components.GridLayout
@@ -56,11 +61,22 @@ import com.example.galleryakio.ui.theme.LocalCustomColors
 class MainActivity : ComponentActivity() {
     private val viewModel: GalleryViewModel by viewModels()
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        openFromIntent(intent)
+    }
+
+    private fun openFromIntent(intent: Intent?) {
+        val uri = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return
+        viewModel.externalItem = externalItem(uri, intent.type)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Start the MediaStore query now, in parallel with inflating the first frame.
         if (hasMediaAccess(this)) viewModel.start()
+        openFromIntent(intent)
         setContent {
             val settings by viewModel.settings.collectAsStateWithLifecycle()
             GalleryTheme(theme = settings.theme, darkMode = settings.darkMode) {
@@ -91,6 +107,30 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+private fun ComponentActivity.externalItem(uri: Uri, type: String?): MediaItem {
+    val name = runCatching {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment.orEmpty()
+    val mime = type ?: contentResolver.getType(uri) ?: ""
+    val now = System.currentTimeMillis()
+    return MediaItem(
+        // Clear of MediaStore's ids, which are positive.
+        id = -1L - (uri.toString().hashCode().toLong() and 0x7FFFFFFFL),
+        uri = uri,
+        displayName = name,
+        type = if (mime.startsWith("video/")) MediaType.VIDEO else MediaType.PHOTO,
+        dateAdded = now,
+        dateTaken = now,
+        dateModified = now,
+        size = 0,
+        mimeType = mime,
+        relativePath = "",
+        bucketName = "",
+    )
 }
 
 private val mediaPermissions: Array<String> =

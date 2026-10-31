@@ -46,6 +46,8 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
+                <!-- What file managers call a CR3, JXL, TGA or QOI, having no type for them. -->
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
 

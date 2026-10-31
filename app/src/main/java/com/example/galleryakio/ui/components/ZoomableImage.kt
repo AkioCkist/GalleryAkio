@@ -39,10 +39,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
+import android.widget.Toast
+import coil3.BitmapImage
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.size.Precision
 import com.example.galleryakio.data.MediaItem
+import com.example.galleryakio.data.isRawImage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -90,15 +93,27 @@ fun ZoomableImage(
             .build()
     }
     val tiled = !item.isGif && !item.isSvg
+    // A RAW file's region decoder would only reach its small embedded preview.
+    val raw = remember(item.id) { isRawImage(item.mimeType, item.displayName) }
+    // Parts read from the file would freeze an animated WebP or PNG the moment it is zoomed.
+    var animated by remember(item.id) { mutableStateOf(false) }
+    // Older cameras' previews are thumbnails, too small to show even before any zoom.
+    var previewTooSmall by remember(item.id) { mutableStateOf(false) }
     val zoom = remember(item.id, tiled) { if (tiled) ZoomState(item.width, item.height) else ZoomState() }
     ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier, zoom = zoom, onZoomGesture = onZoomGesture) {
         AsyncImage(
             model = request,
             contentDescription = item.displayName,
             contentScale = ContentScale.Fit,
+            onSuccess = { state ->
+                val image = state.result.image
+                animated = image !is BitmapImage
+                if (raw && maxOf(image.width, image.height) * 2 < maxOf(zoom.size.width, zoom.size.height)) previewTooSmall = true
+            },
+            onError = { if (isCurrentPage) Toast.makeText(context, "Can't read this file", Toast.LENGTH_SHORT).show() },
             modifier = Modifier.fillMaxSize(),
         )
-        if (tiled) SharpTiles(item.uri, zoom, isCurrentPage)
+        if (tiled && !animated) SharpTiles(item.uri, zoom, isCurrentPage, raw, developNow = previewTooSmall && isCurrentPage)
     }
 }
 

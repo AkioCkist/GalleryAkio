@@ -10,7 +10,15 @@ import coil3.SingletonImageLoader
 import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.request.crossfade
+import coil3.svg.SvgDecoder
 import coil3.video.VideoFrameDecoder
+import com.example.galleryakio.data.ClassicImageDecoder
+import com.example.galleryakio.data.GatedDecoder
+import com.gemalto.jp2.coil.Jpeg2000Decoder
+import com.t8rin.psd.coil.PsdDecoder
+import com.t8rin.raw_coder.coil.RawDecoder
+import com.t8rin.tiff_coder.coil.TiffDecoder
+import oupson.apng.coil.AnimatedPngDecoder
 import android.os.Build
 import com.example.galleryakio.data.MediaRepository
 import com.example.galleryakio.data.SettingsRepository
@@ -43,6 +51,13 @@ class GalleryApplication : Application(), SingletonImageLoader.Factory {
             .components {
                 if (Build.VERSION.SDK_INT >= 28) add(AnimatedImageDecoder.Factory()) else add(GifDecoder.Factory())
                 add(ThumbnailFetcher.Factory())
+                add(GatedDecoder.raw(RawDecoder.Factory()))
+                add(GatedDecoder.tiff(TiffDecoder.Factory()))
+                add(GatedDecoder.animatedPng(AnimatedPngDecoder.Factory()))
+                add(Jpeg2000Decoder.Factory())
+                add(PsdDecoder.Factory())
+                add(SvgDecoder.Factory())
+                add(ClassicImageDecoder.Factory())
                 add(VideoFrameDecoder.Factory())
             }
             // A gallery is almost all images: give the memory cache more room than the 20 %
