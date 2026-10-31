@@ -29,6 +29,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Tracks
 import androidx.media3.session.MediaSession
 import com.example.galleryakio.VideoPlaybackService
 import com.example.galleryakio.data.VideoLeaveAction
@@ -135,13 +137,13 @@ object VideoPositions {
     }
 }
 
-private const val AUTO_HIDE_MS = 3_000L
+internal const val AUTO_HIDE_MS = 3_000L
 /** A player no longer next to the page at rest is released this long after being stopped. */
 private const val UNLOAD_DELAY_MS = 400L
 private val VIDEO_AUDIO = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build()
 /** Android refuses a PiP window outside these proportions. */
-private const val PIP_MIN_ASPECT = 0.42f
-private const val PIP_MAX_ASPECT = 2.39f
+internal const val PIP_MIN_ASPECT = 0.42f
+internal const val PIP_MAX_ASPECT = 2.39f
 /** A scrub seek counts as shown once a picture this close to its target is rendered. */
 private const val SEEK_ARRIVED_MS = 100L
 /**
@@ -189,6 +191,9 @@ class VideoControlsHost {
      * (20 ms of GPU, dropping video frames); over a still one their blur stays cached.
      */
     var backdropStill by mutableStateOf<ImageBitmap?>(null)
+
+    /** The current video's advanced settings popup, for the viewer's More menu. */
+    var advancedPanel by mutableStateOf<(@Composable (onDismiss: () -> Unit) -> Unit)?>(null)
 }
 
 /**
@@ -227,6 +232,60 @@ private class ScrubPreviews {
     fun clear() = cache.evictAll()
 }
 
+/** ExoPlayer gave up on these: this run of the app goes straight to VLC for them. */
+private val vlcVideos = HashSet<Long>()
+
+/** What says ExoPlayer can't do it, as opposed to a broken file or running out of decoders. */
+private val UNPLAYABLE_ERRORS = setOf(
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+)
+
+/** A video with no picture it can show, or with sound of which none can play. */
+private fun cantPlay(tracks: Tracks): Boolean {
+    val picture = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+    val sound = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+    return picture.none { it.isSupported } || (sound.isNotEmpty() && sound.none { it.isSupported })
+}
+
+/**
+ * ExoPlayer first, for everything it can play: it is what the swiping, scrubbing and picture in
+ * picture are built on. What it can't goes to VLC, whose code loads only then.
+ */
+@Composable
+fun VideoPlayer(
+    item: MediaItem,
+    isCurrentPage: Boolean,
+    isNearby: Boolean,
+    preloadDelayMs: Long,
+    isVisible: Boolean,
+    isAudible: Boolean,
+    leaving: Boolean,
+    rememberPosition: Boolean,
+    loop: Boolean,
+    onLoopChange: (Boolean) -> Unit,
+    leaveAction: VideoLeaveAction,
+    controlsVisible: Boolean,
+    onControlsChange: (Boolean) -> Unit,
+    controlsHost: VideoControlsHost,
+    modifier: Modifier = Modifier,
+) {
+    var useVlc by remember(item.id) { mutableStateOf(item.id in vlcVideos) }
+    if (useVlc) {
+        VlcVideoPlayer(item, isCurrentPage, isVisible, leaving, rememberPosition, loop, onLoopChange, controlsVisible, onControlsChange, controlsHost, modifier)
+    } else {
+        ExoVideoPlayer(
+            onUnplayable = {
+                vlcVideos += item.id
+                useVlc = true
+            },
+            item, isCurrentPage, isNearby, preloadDelayMs, isVisible, isAudible, leaving, rememberPosition, loop, onLoopChange,
+            leaveAction, controlsVisible, onControlsChange, controlsHost, modifier,
+        )
+    }
+}
+
 /**
  * ExoPlayer for the current pager page only; other pages show a still frame,
  * so swiping through a mixed album never holds more than one decoder.
@@ -239,7 +298,9 @@ private class ScrubPreviews {
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPlayer(
+private fun ExoVideoPlayer(
+    /** ExoPlayer can't read this file, or play the picture or sound in it. */
+    onUnplayable: () -> Unit,
     item: MediaItem,
     /** The page at rest: it alone has the controls. */
     isCurrentPage: Boolean,
@@ -298,8 +359,9 @@ fun VideoPlayer(
 
     val scope = rememberCoroutineScope()
     val active by rememberUpdatedState(isCurrentPage)
+    val advanced = remember(item.id) { ExoVideoEngine(context, item.id) }
     val player = remember(item.id) {
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, movieRenderers(context, advanced.audioOffset))
             // Playing on with the app away, it has to yield to calls and other players by itself,
             // stop when headphones come out, and keep the CPU awake with the screen off.
             .setAudioAttributes(VIDEO_AUDIO, isAudible)
@@ -307,11 +369,13 @@ fun VideoPlayer(
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build().apply {
             setMediaItem(
-                ExoMediaItem.Builder()
-                    .setUri(item.uri)
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(item.displayName).build())
-                    .build(),
+                advanced.mediaItem(
+                    ExoMediaItem.Builder()
+                        .setUri(item.uri)
+                        .setMediaMetadata(MediaMetadata.Builder().setTitle(item.displayName).build()),
+                ),
             )
+            advanced.attach(this)
             repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (rememberPosition) seekTo(VideoPositions.get(context, item.id))
             playWhenReady = isVisible
@@ -387,6 +451,8 @@ fun VideoPlayer(
             override fun onPlaybackStateChanged(state: Int) {
                 ended = state == Player.STATE_ENDED
                 if (player.duration > 0) duration = player.duration
+                // No error for this one: the file opens, but nothing in it was recognised as a picture.
+                if (state == Player.STATE_READY && cantPlay(player.currentTracks)) onUnplayable()
                 // Finished: bring the controls back so replay is in reach.
                 if (ended && active) onControlsChange(true)
             }
@@ -400,6 +466,16 @@ fun VideoPlayer(
 
             override fun onRenderedFirstFrame() {
                 firstFrame = true
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                advanced.onTracksChanged(tracks)
+                if (cantPlay(tracks)) onUnplayable()
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (advanced.recoverFrom(error)) return
+                if (error.errorCode in UNPLAYABLE_ERRORS) onUnplayable()
             }
         }
         player.addListener(listener)
@@ -725,19 +801,27 @@ fun VideoPlayer(
         if (isCurrentPage) controlsHost.content = controls
         onDispose { if (controlsHost.content === controls) controlsHost.content = null }
     }
+    val advancedPanel: @Composable (() -> Unit) -> Unit = remember(player) {
+        { onDismiss -> VideoAdvancedPanel(advanced, onDismiss) }
+    }
+    DisposableEffect(controlsHost, advancedPanel, isCurrentPage) {
+        if (isCurrentPage) controlsHost.advancedPanel = advancedPanel
+        onDispose { if (controlsHost.advancedPanel === advancedPanel) controlsHost.advancedPanel = null }
+    }
+    VideoAdvancedEffects(advanced)
 
+    Box(modifier.fillMaxSize()) {
     ZoomBox(
         resetKey = item.id,
         isCurrentPage = isCurrentPage,
         onTap = { onControlsChange(!controlsVisible) },
-        modifier = modifier,
         onDoubleTap = {
             // Pausing brings the controls up, the only sign of it while they were hidden.
             if (player.isPlaying) onControlsChange(true)
             togglePlay()
         },
     ) {
-        Box(Modifier.aspectRatio(aspect)) {
+        Box(Modifier.videoFrame(advanced.frameMode, aspect)) {
             AndroidView(
                 factory = { ctx -> TextureView(ctx).also { textureView[0] = it; player.setVideoTextureView(it) } },
                 onRelease = { player.clearVideoTextureView(it); textureView[0] = null },
@@ -756,10 +840,12 @@ fun VideoPlayer(
             }
         }
     }
+    if (advanced.subtitlesShown) VideoSubtitles(player, advanced, aspect)
+    }
 }
 
 @Composable
-private fun CircleButton(
+internal fun CircleButton(
     backdrop: Backdrop,
     icon: ImageVector,
     description: String,
@@ -792,7 +878,7 @@ fun rememberInPictureInPicture(): State<Boolean> {
 }
 
 @Composable
-private fun PlayPill(backdrop: Backdrop, enabled: Boolean, icon: ImageVector, position: Long, duration: Long, onClick: () -> Unit) {
+internal fun PlayPill(backdrop: Backdrop, enabled: Boolean, icon: ImageVector, position: Long, duration: Long, onClick: () -> Unit) {
     Row(
         Modifier
             .height(CONTROL_SIZE)
@@ -827,7 +913,7 @@ private val stripCache = LruCache<Long, SnapshotStateList<ImageBitmap?>>(4)
  * Fills in as they decode; a load cut short (the user left) resumes with the missing ones.
  */
 @Composable
-private fun rememberFilmstripFrames(item: MediaItem, duration: Long, load: Boolean): List<ImageBitmap?> {
+internal fun rememberFilmstripFrames(item: MediaItem, duration: Long, load: Boolean): List<ImageBitmap?> {
     val context = LocalContext.current
     val count = ((duration / 2000).toInt()).coerceIn(8, 60)
     val frames = remember(item.id, count) {
@@ -867,7 +953,7 @@ private fun rememberFilmstripFrames(item: MediaItem, duration: Long, load: Boole
  * Never dispatching nested scroll, reaching either end can't start swiping the pager either.
  */
 @Composable
-private fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState, enabled: Boolean, onScrub: (Boolean) -> Unit) {
+internal fun Filmstrip(frames: List<ImageBitmap?>, state: ScrollState, enabled: Boolean, onScrub: (Boolean) -> Unit) {
     val scope = rememberCoroutineScope()
     val fling = ScrollableDefaults.flingBehavior()
     val glide = remember { arrayOfNulls<Job>(1) }

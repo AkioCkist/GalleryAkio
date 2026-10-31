@@ -68,6 +68,10 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)
+    // FFmpeg decoders for what the phone can't play (DTS, TrueHD...). GPLv3, see NOTICE.
+    implementation(libs.nextlib.media3ext)
+    // VLC, for the files ExoPlayer can't open at all (WMV, RealMedia, Blu-ray M2TS...).
+    implementation(libs.libvlc)
     // On-device search: labels, faces and text, all with bundled models (works offline).
     implementation(libs.mlkit.image.labeling)
     implementation(libs.mlkit.face.detection)

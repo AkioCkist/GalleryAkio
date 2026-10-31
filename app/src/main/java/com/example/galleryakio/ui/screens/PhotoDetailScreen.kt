@@ -16,6 +16,7 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import android.content.ActivityNotFoundException
@@ -190,6 +191,7 @@ fun PhotoDetailScreen(
     var showInfo by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var confirmTrash by remember { mutableStateOf(false) }
+    var showAdvanced by remember { mutableStateOf(false) }
 
     ImmersiveMode(fullscreen = { !overlay })
     MaxBrightness(enabled = settings.maxBrightnessViewing)
@@ -389,6 +391,7 @@ fun PhotoDetailScreen(
                 onRotate = { landscape = !landscape },
                 onDetails = { showInfo = true },
                 onRename = { renaming = true },
+                onAdvanced = { showAdvanced = true },
             )
         }
         FadingOverlay({ overlay }, barsAlpha, onReveal = { overlay = true }, modifier = Modifier.align(Alignment.BottomCenter)) {
@@ -430,6 +433,7 @@ fun PhotoDetailScreen(
             Text(current.displayName, color = LocalGlassContent.current.copy(alpha = 0.75f), fontSize = 14.sp)
         }
     }
+    if (showAdvanced) videoControls.advancedPanel?.invoke { showAdvanced = false }
     if (showInfo) InfoSheet(current, onDismiss = { showInfo = false })
     if (renaming) RenameDialog(viewModel, current, onDismiss = { renaming = false })
 }
@@ -535,6 +539,7 @@ private fun TopBar(
     onRotate: () -> Unit,
     onDetails: () -> Unit,
     onRename: () -> Unit,
+    onAdvanced: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -581,6 +586,10 @@ private fun TopBar(
                     GlassMenuItem(rememberVectorPainter(Icons.AutoMirrored.Rounded.ExitToApp), "WHEN LEAVING", leaveAction.label) {
                         val all = VideoLeaveAction.entries
                         onLeaveActionChange(all[(leaveAction.ordinal + 1) % all.size])
+                    }
+                    GlassMenuItem(rememberVectorPainter(Icons.Rounded.Tune), "ADVANCED", "Tracks, sync, speed") {
+                        menu = false
+                        onAdvanced()
                     }
                 }
                 if (!item.isVideo) {

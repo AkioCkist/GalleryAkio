@@ -2,3 +2,6 @@
 
 # GPUImage's YUV helper is looked up from native code by name.
 -keep class jp.co.cyberagent.android.gpuimage.GPUImageNativeLibrary { *; }
+
+# libVLC ships no rules, and its native code reaches these classes by name.
+-keep class org.videolan.libvlc.** { *; }
