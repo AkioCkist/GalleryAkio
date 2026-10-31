@@ -94,6 +94,37 @@ class ZoomSharpnessTest {
         ).use { it.readBytes() }
     }
 
+    /** A slight pinch, below the zoom where the photo's own pixels are one to one with the screen. */
+    @Test
+    fun pinchSlightly() {
+        var current by mutableStateOf<MediaItem?>(null)
+        rule.setContent {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                current?.let { item -> key(item.id) { ZoomableImage(item, isCurrentPage = true, onTap = {}) } }
+            }
+        }
+        val jpeg = "${MediaStore.MediaColumns.MIME_TYPE}='image/jpeg'"
+        val photos = listOf(
+            "mid" to biggest("$jpeg AND ${MediaStore.MediaColumns.WIDTH}>=1300 AND ${MediaStore.MediaColumns.WIDTH}<2000 AND ${MediaStore.MediaColumns.WIDTH}>${MediaStore.MediaColumns.HEIGHT}"),
+            "large" to biggest("$jpeg AND ${MediaStore.MediaColumns.WIDTH}<${MediaStore.MediaColumns.HEIGHT}*2"),
+            "w4000" to biggest("$jpeg AND ${MediaStore.MediaColumns.WIDTH}>=3300 AND ${MediaStore.MediaColumns.WIDTH}<=4200 AND ${MediaStore.MediaColumns.WIDTH}>${MediaStore.MediaColumns.HEIGHT}"),
+            "rot90" to biggest("$jpeg AND ${MediaStore.Images.ImageColumns.ORIENTATION}=90"),
+            "heic" to biggest("${MediaStore.MediaColumns.MIME_TYPE} IN ('image/heic','image/heif')"),
+        )
+        for ((name, item) in photos) {
+            if (item == null) {
+                Log.i("ZoomSharpness", "$name: no such photo")
+                continue
+            }
+            Log.i("ZoomSharpness", "$name: ${item.displayName} ${item.width}x${item.height} ${item.mimeType}")
+            rule.runOnIdle { current = item }
+            wait(2_500)
+            pinch(from = 200f, to = 300f) // ×1.5
+            wait(3_000)
+            shot("${name}_1.5x")
+        }
+    }
+
     @Test
     fun pinchBiggestPhotos() {
         var current by mutableStateOf<MediaItem?>(null)

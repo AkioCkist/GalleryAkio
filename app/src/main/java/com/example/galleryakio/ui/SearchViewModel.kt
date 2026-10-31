@@ -141,8 +141,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         .mapLatest { (q, items) ->
             if (q.isEmpty()) return@mapLatest SearchResults()
             withContext(Dispatchers.Default) {
-                val needle = normalizeForSearch(q)
-                val byName = items.filter { normalizeForSearch(it.displayName).contains(needle) }
+                // Every word must appear in the file name (extension included) or the folder name.
+                val words = normalizeForSearch(q).split(Regex("\\s+"))
+                val byName = items.filter { item ->
+                    val haystack = normalizeForSearch("${item.displayName} ${item.bucketName}")
+                    words.all { it in haystack }
+                }
                 val nameIds = byName.mapTo(HashSet()) { it.id }
                 val contentIds = if (!aiSettings.value.enabled) emptySet()
                 else withContext(Dispatchers.IO) { indexer.index.search(q) }

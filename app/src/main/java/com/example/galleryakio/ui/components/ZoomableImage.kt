@@ -2,7 +2,9 @@ package com.example.galleryakio.ui.components
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.ui.geometry.lerp
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -31,6 +33,8 @@ import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +43,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.size.Precision
 import com.example.galleryakio.data.MediaItem
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 private const val MAX_SCALE = 5f
@@ -53,6 +58,7 @@ class ZoomState(private val pixelWidth: Int = 0, private val pixelHeight: Int = 
     val scale = Animatable(1f)
     var offset by mutableStateOf(Offset.Zero)
     var size by mutableStateOf(IntSize.Zero)
+    var fling: Job? = null
 
     val maxScale: Float
         get() {
@@ -71,6 +77,7 @@ fun ZoomableImage(
     isCurrentPage: Boolean,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
+    onZoomGesture: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val request = remember(item.uri) {
@@ -84,7 +91,7 @@ fun ZoomableImage(
     }
     val tiled = !item.isGif && !item.isSvg
     val zoom = remember(item.id, tiled) { if (tiled) ZoomState(item.width, item.height) else ZoomState() }
-    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier, zoom = zoom) {
+    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier, zoom = zoom, onZoomGesture = onZoomGesture) {
         AsyncImage(
             model = request,
             contentDescription = item.displayName,
@@ -106,6 +113,7 @@ val LocalViewerZoom = staticCompositionLocalOf { ViewerZoom() }
  * Pinch / double-tap zoom for any content (photos and videos). Single-finger drags pass
  * through to the parent pager while not zoomed, so swiping between items keeps working.
  * With [onDoubleTap] (videos) a double tap does that instead and only pinch zooms.
+ * [onZoomGesture] runs once per pinch or drag, as soon as it moves the content.
  */
 @Composable
 fun ZoomBox(
@@ -115,10 +123,13 @@ fun ZoomBox(
     modifier: Modifier = Modifier,
     onDoubleTap: (() -> Unit)? = null,
     zoom: ZoomState = remember { ZoomState() },
+    onZoomGesture: () -> Unit = {},
     content: @Composable BoxScope.() -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
     val doubleTap by rememberUpdatedState(onDoubleTap)
+    val zoomGesture by rememberUpdatedState(onZoomGesture)
+    val flingDecay = rememberSplineBasedDecay<Offset>()
     val doubleTapZooms = onDoubleTap == null
     val scope = rememberCoroutineScope()
     val scale = zoom.scale
@@ -133,6 +144,7 @@ fun ZoomBox(
     // Reset zoom when the user swipes away.
     LaunchedEffect(isCurrentPage) {
         if (!isCurrentPage) {
+            zoom.fling?.cancel()
             scale.snapTo(1f)
             offset = Offset.Zero
         }
@@ -175,18 +187,26 @@ fun ZoomBox(
             }
             .pointerInput(resetKey) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // A finger that stops a fling is not a tap: the bars stay as they are.
+                    if (zoom.fling?.isActive == true) down.consume()
+                    zoom.fling?.cancel()
                     // Tracked here, not read back from the Animatable: snapTo runs later, so
                     // several events in one frame would otherwise all see a stale scale.
                     var current = scale.value
                     var pinched = false
-                    // One finger on a zoomed photo only starts panning past touch slop. Until
-                    // then its jitter is left unconsumed, or the tap detector would treat every
-                    // tap as a drag and double-tap could never zoom back out.
+                    // One finger on a zoomed photo moves it from the first pixel, but only counts
+                    // as a drag past touch slop. Until then its jitter is left unconsumed, or the
+                    // tap detector would treat every tap as a drag and double-tap could never
+                    // zoom back out.
                     var dragging = false
                     var drift = Offset.Zero
+                    val tracker = VelocityTracker()
                     do {
                         val event = awaitPointerEvent()
+                        // Includes the lift, whose late timestamp reads as no speed if the finger
+                        // had come to rest. With two fingers there is no speed to carry on with.
+                        if (event.changes.size == 1) tracker.addPointerInputChange(event.changes[0]) else tracker.resetTracking()
                         val pressed = event.changes.count { it.pressed }
                         // A finger landing or lifting moves the centroid by half the spread;
                         // treating that as a pan makes the photo jump.
@@ -198,7 +218,7 @@ fun ZoomBox(
                             drift += event.calculatePan()
                             dragging = drift.getDistance() > viewConfiguration.touchSlop
                         }
-                        if (dragging && (pressed > 1 || current > 1.01f) && !fingersChanged && centroid.isSpecified) {
+                        if ((pressed > 1 || current > 1.01f) && !fingersChanged && centroid.isSpecified) {
                             val newScale = (current * event.calculateZoom()).coerceIn(1f, zoom.maxScale)
                             val center = Offset(size.width / 2f, size.height / 2f)
                             // Keep the pinch point under the fingers.
@@ -207,12 +227,15 @@ fun ZoomBox(
                             // One NaN here would stick (NaN survives every later clamp) and
                             // leave the photo invisible, i.e. a black screen.
                             if (newScale.isFinite() && next.isFinite && (newScale != current || next != offset)) {
+                                if (newScale != current) scope.launch { scale.snapTo(newScale) }
                                 current = newScale
                                 offset = next
-                                pinched = true
-                                scope.launch { scale.snapTo(newScale) }
+                                if (dragging && !pinched) {
+                                    pinched = true
+                                    zoomGesture()
+                                }
                             }
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (dragging) event.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
                     // Only after a real pinch: a plain tap ending here would otherwise cancel
@@ -220,6 +243,16 @@ fun ZoomBox(
                     if (pinched && current <= 1.01f) {
                         offset = Offset.Zero
                         scope.launch { scale.animateTo(1f) }
+                    } else if (pinched) {
+                        val velocity = tracker.calculateVelocity()
+                        zoom.fling = scope.launch {
+                            // The photo carries on from the finger and slows to a stop at the edges.
+                            Animatable(offset, Offset.VectorConverter).animateDecay(Offset(velocity.x, velocity.y), flingDecay) {
+                                val clamped = clampOffset(value, scale.value)
+                                if (clamped == offset && clamped != value) zoom.fling?.cancel()
+                                offset = clamped
+                            }
+                        }
                     }
                 }
             }

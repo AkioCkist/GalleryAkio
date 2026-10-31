@@ -95,9 +95,10 @@ private class TileSource(
     fun rangeFor(view: IntSize, scale: Float, offset: Offset): TileRange? {
         if (view.width == 0 || view.height == 0) return null
         val fit = fit(view)
+        // Coil decodes the base image down to fit, not to a power of two: any bigger photo has
+        // more to show as soon as it is zoomed. A smaller one has nothing to add.
+        if (fit >= 1f) return null
         val sample = sampleFor(fit * scale)
-        // The base image was decoded at the sample fit asks for: nothing to gain there.
-        if (sample >= sampleFor(fit)) return null
         val cx = view.width / 2f
         val cy = view.height / 2f
         val left = cx - width * fit / 2f

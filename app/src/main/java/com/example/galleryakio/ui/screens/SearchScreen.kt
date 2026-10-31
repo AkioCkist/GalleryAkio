@@ -75,6 +75,7 @@ import com.example.galleryakio.ui.SearchViewModel
 import com.example.galleryakio.ui.components.MediaGrid
 import com.example.galleryakio.ui.components.MediaThumbnail
 import com.example.galleryakio.ui.components.SelectionState
+import com.example.galleryakio.ui.components.formatSize
 import com.example.galleryakio.ui.components.rememberCellSizePx
 import com.example.galleryakio.ui.theme.CqMono
 import com.example.galleryakio.ui.theme.LocalCustomColors
@@ -131,8 +132,10 @@ fun SearchScreen(galleryViewModel: GalleryViewModel, navController: NavControlle
                         },
                         onCategory = { view = it.name },
                     )
-                } else {
+                } else if (ai.enabled) {
                     ResultsView(results.byName, results.byContent, progress, settings.gridColumns, settings.darkMode, ::open)
+                } else {
+                    NameResultsList(results.byName, pending = results.query != query.trim(), ::open)
                 }
             }
         }
@@ -214,7 +217,7 @@ private fun SearchHome(
             item {
                 InfoCard(
                     "AI SEARCH IS OFF",
-                    "Searching by file name only. Turn on AI search in Settings to find photos by content, faces and text.",
+                    "Searching by file name, extension or folder. Turn on AI search in Settings to find photos by content, faces and text.",
                     onClick = { onAction("ai") },
                 )
             }
@@ -439,6 +442,43 @@ private fun PeopleView(
             darkMode = darkMode,
             modifier = Modifier.fillMaxSize(),
         )
+    }
+}
+
+/** Results while AI search is off: one row per file, so the matched name is readable. */
+@Composable
+private fun NameResultsList(items: List<MediaItem>, pending: Boolean, onOpen: (MediaItem, List<MediaItem>) -> Unit) {
+    val colors = LocalCustomColors.current
+    val cellPx = rememberCellSizePx(5, LocalConfiguration.current.screenWidthDp)
+    if (items.isEmpty()) {
+        // Still searching is not the same as nothing found.
+        if (!pending) CenteredMessage("No results found", "Try a file name, an extension like .png, or a folder")
+        return
+    }
+    Text(
+        "${items.size} RESULTS",
+        fontFamily = CqMono, fontSize = 14.sp, color = colors.unselectedItem,
+        modifier = Modifier.padding(horizontal = 21.dp, vertical = 8.dp),
+    )
+    LazyColumn(contentPadding = PaddingValues(bottom = 100.dp), modifier = Modifier.fillMaxSize()) {
+        items(items, key = { it.id }) { item ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onOpen(item, items) }.padding(horizontal = 21.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MediaThumbnail(item, cellPx, Modifier.size(72.dp).clip(RoundedCornerShape(18.dp)))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    // Wrapped in full: the end of a name (its extension) is what people search for.
+                    Text(item.displayName, fontFamily = CqMono, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${item.bucketName}  ·  ${formatSize(item.size)}", fontSize = 13.sp, color = colors.unselectedItem,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -342,7 +342,17 @@ fun PhotoDetailScreen(
                     controlsHost = videoControls,
                 )
             } else {
-                ZoomableImage(item, isCurrentPage = isCurrent, onTap = { overlay = !overlay })
+                ZoomableImage(
+                    item,
+                    isCurrentPage = isCurrent,
+                    onTap = { overlay = !overlay },
+                    // At once, not faded: glass over a moving photo re-blurs on every frame of
+                    // the pan, and fading it costs more still. A tap brings the bars back.
+                    onZoomGesture = {
+                        overlay = false
+                        scope.launch { overlayAlpha.snapTo(0f) }
+                    },
+                )
             }
         }
         }
