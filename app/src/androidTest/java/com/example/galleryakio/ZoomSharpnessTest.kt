@@ -125,6 +125,41 @@ class ZoomSharpnessTest {
         }
     }
 
+    /** Zooming back in right after zooming out: "again" is shot before a fresh decode could finish. */
+    @Test
+    fun zoomOutAndBackIn() {
+        var current by mutableStateOf<MediaItem?>(null)
+        rule.setContent {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                current?.let { item -> key(item.id) { ZoomableImage(item, isCurrentPage = true, onTap = {}) } }
+            }
+        }
+        val jpeg = "${MediaStore.MediaColumns.MIME_TYPE}='image/jpeg'"
+        val photos = listOf(
+            "large" to biggest("$jpeg AND ${MediaStore.MediaColumns.WIDTH}<${MediaStore.MediaColumns.HEIGHT}*2"),
+            "heic" to biggest("${MediaStore.MediaColumns.MIME_TYPE} IN ('image/heic','image/heif')"),
+        )
+        for ((name, item) in photos) {
+            if (item == null) {
+                Log.i("ZoomSharpness", "$name: no such photo")
+                continue
+            }
+            Log.i("ZoomSharpness", "$name: ${item.displayName} ${item.width}x${item.height} ${item.mimeType}")
+            rule.runOnIdle { current = item }
+            wait(2_500)
+            pinch(from = 200f, to = 300f) // ×1.5
+            wait(100)
+            shot("${name}_first")
+            wait(4_000)
+            shot("${name}_settled")
+            pinch(from = 300f, to = 200f) // back to ×1
+            wait(500)
+            pinch(from = 200f, to = 300f)
+            wait(100)
+            shot("${name}_again")
+        }
+    }
+
     @Test
     fun pinchBiggestPhotos() {
         var current by mutableStateOf<MediaItem?>(null)

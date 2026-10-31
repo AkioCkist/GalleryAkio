@@ -1,6 +1,8 @@
 package com.example.galleryakio.ui.components
 
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
@@ -10,9 +12,11 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -37,6 +41,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /** Tile edge in decoded pixels. */
@@ -44,6 +49,9 @@ private const val TILE_PX = 512
 
 /** Mid-pinch every frame can want other tiles; only start decoding once they hold still this long. */
 private const val SETTLE_MS = 50L
+
+/** A full screen of tiles is at most about 84 MB, so this also holds some of another zoom level. */
+private const val TILE_CACHE_BYTES = 128 * 1024 * 1024
 
 /** A region decoder takes one call at a time anyway. */
 private val TILE_DISPATCHER = Dispatchers.IO.limitedParallelism(1)
@@ -70,6 +78,11 @@ private fun sampleFor(screenPerPhoto: Float): Int {
     var sample = 1
     while (sample * 2 * screenPerPhoto <= 1f) sample *= 2
     return sample
+}
+
+/** Decoded tiles of the photo on screen, those out of view included. */
+private class TileCache : LruCache<Tile, Bitmap>(TILE_CACHE_BYTES) {
+    override fun sizeOf(key: Tile, value: Bitmap) = value.byteCount
 }
 
 /** The photo file, read a rectangle at a time. */
@@ -180,18 +193,33 @@ fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean) {
     val tiles = remember(uri) { mutableStateMapOf<Tile, Bitmap>() }
     var source by remember(uri) { mutableStateOf<TileSource?>(null) }
     var currentSample by remember(uri) { mutableStateOf(0) }
+    val cache = remember(uri) { TileCache() }
     val zoomed by remember(zoom) { derivedStateOf { zoom.scale.value > ZOOMED_SCALE } }
-    val active = isCurrentPage && zoomed
 
-    LaunchedEffect(uri, active) {
-        if (!active) return@LaunchedEffect
+    DisposableEffect(cache) {
+        val callbacks = object : ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) {
+                if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) cache.evictAll()
+            }
+            override fun onConfigurationChanged(newConfig: Configuration) = Unit
+            @Deprecated("Deprecated in Java")
+            override fun onLowMemory() = cache.evictAll()
+        }
+        context.registerComponentCallbacks(callbacks)
+        onDispose { context.unregisterComponentCallbacks(callbacks) }
+    }
+
+    // The file stays open and its tiles stay cached until the page is left, not just until the
+    // photo is zoomed back out: zooming in again then shows them at once.
+    LaunchedEffect(uri, isCurrentPage) {
+        if (!isCurrentPage) return@LaunchedEffect
+        snapshotFlow { zoomed }.first { it }
         val opened = withContext(TILE_DISPATCHER) { openTileSource(context, uri) } ?: return@LaunchedEffect
         source = opened
         try {
-            snapshotFlow { opened.rangeFor(zoom.size, zoom.scale.value, zoom.offset) }
+            snapshotFlow { if (zoomed) opened.rangeFor(zoom.size, zoom.scale.value, zoom.offset) else null }
                 .distinctUntilChanged()
                 .collectLatest { range ->
-                    delay(SETTLE_MS)
                     if (range == null) {
                         tiles.clear()
                         return@collectLatest
@@ -200,16 +228,22 @@ fun SharpTiles(uri: Uri, zoom: ZoomState, isCurrentPage: Boolean) {
                     currentSample = range.sample
                     // Other resolutions stay as the backdrop until this one has filled in.
                     tiles.keys.retainAll { it.sample != range.sample || it in wanted }
+                    for (tile in wanted) cache[tile]?.let { tiles[tile] = it }
+                    delay(SETTLE_MS)
                     for (tile in wanted) {
                         if (tile in tiles) continue
-                        tiles[tile] = withContext(TILE_DISPATCHER) { opened.decode(tile) } ?: continue
+                        // Cached on the decoding thread: a tile finished as the view moves on still counts.
+                        tiles[tile] = withContext(TILE_DISPATCHER) { opened.decode(tile)?.also { cache.put(tile, it) } } ?: continue
                     }
                     tiles.keys.retainAll { it in wanted }
                 }
         } finally {
             source = null
             tiles.clear()
-            withContext(NonCancellable + TILE_DISPATCHER) { opened.close() }
+            withContext(NonCancellable + TILE_DISPATCHER) {
+                opened.close()
+                cache.evictAll()
+            }
         }
     }
 

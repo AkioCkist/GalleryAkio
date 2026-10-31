@@ -122,7 +122,13 @@ fun thumbnailRequest(context: Context, item: MediaItem, bucket: Int): ImageReque
     ImageRequest.Builder(context)
         // MediaStore's cached thumbnails are made for grid sizes; past that, decode the file
         // so one- and two-column grids stay sharp. Videos always use MediaStore's frame.
-        .data(if (bucket <= 512 || item.isVideo) MediaThumb(item.uri, bucket) else item.uri)
+        .data(
+            when {
+                item.isVideo -> MediaThumb(item.uri, bucket)
+                bucket <= 512 -> MediaThumb(item.uri, bucket, minOf(item.width, item.height), item.dateModified)
+                else -> item.uri
+            },
+        )
         .size(Size(bucket, bucket))
         .memoryCacheKey(thumbnailKey(item.id, bucket))
         // A crossfade per tile means extra frames of work while flinging.
