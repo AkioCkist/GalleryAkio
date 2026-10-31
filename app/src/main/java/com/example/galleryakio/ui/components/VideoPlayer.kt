@@ -809,16 +809,23 @@ private fun ExoVideoPlayer(
         onDispose { if (controlsHost.advancedPanel === advancedPanel) controlsHost.advancedPanel = null }
     }
     VideoAdvancedEffects(advanced)
+    val tapSeek = remember(advanced) { TapSeek(advanced) }
 
     Box(modifier.fillMaxSize()) {
     ZoomBox(
         resetKey = item.id,
         isCurrentPage = isCurrentPage,
-        onTap = { onControlsChange(!controlsVisible) },
-        onDoubleTap = {
-            // Pausing brings the controls up, the only sign of it while they were hidden.
-            if (player.isPlaying) onControlsChange(true)
-            togglePlay()
+        onTap = { rightSide ->
+            if (tapSeek.running && !controlsVisible) tapSeek.onTap(rightSide)
+            else onControlsChange(!controlsVisible)
+        },
+        onDoubleTap = { rightSide ->
+            if (!controlsVisible && !ended) {
+                tapSeek.onDoubleTap(rightSide)
+            } else {
+                if (player.isPlaying) onControlsChange(true)
+                togglePlay()
+            }
         },
     ) {
         Box(Modifier.videoFrame(advanced.frameMode, aspect)) {
@@ -841,6 +848,7 @@ private fun ExoVideoPlayer(
         }
     }
     if (advanced.subtitlesShown) VideoSubtitles(player, advanced, aspect)
+    TapSeekBadge(tapSeek)
     }
 }
 

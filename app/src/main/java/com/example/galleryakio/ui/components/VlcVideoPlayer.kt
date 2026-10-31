@@ -560,15 +560,23 @@ internal fun VlcVideoPlayer(
         onDispose { if (controlsHost.advancedPanel === advancedPanel) controlsHost.advancedPanel = null }
     }
     VideoAdvancedEffects(engine)
+    val tapSeek = remember(engine) { TapSeek(engine) }
 
+    Box(modifier.fillMaxSize()) {
     ZoomBox(
         resetKey = item.id,
         isCurrentPage = true,
-        onTap = { onControlsChange(!controlsVisible) },
-        modifier = modifier,
-        onDoubleTap = {
-            if (player?.isPlaying == true) onControlsChange(true)
-            togglePlay()
+        onTap = { rightSide ->
+            if (tapSeek.running && !controlsVisible) tapSeek.onTap(rightSide)
+            else onControlsChange(!controlsVisible)
+        },
+        onDoubleTap = { rightSide ->
+            if (!controlsVisible && !ended) {
+                tapSeek.onDoubleTap(rightSide)
+            } else {
+                if (player?.isPlaying == true) onControlsChange(true)
+                togglePlay()
+            }
         },
     ) {
         Box(Modifier.videoFrame(engine.frameMode, aspect)) {
@@ -595,6 +603,8 @@ internal fun VlcVideoPlayer(
                 AsyncImage(still, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             }
         }
+    }
+    TapSeekBadge(tapSeek)
     }
 }
 

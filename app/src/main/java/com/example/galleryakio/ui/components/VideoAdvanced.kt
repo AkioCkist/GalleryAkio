@@ -11,6 +11,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -21,15 +23,21 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FastRewind
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
@@ -90,6 +99,7 @@ import org.json.JSONObject
 private const val PREFS = "video_advanced"
 private const val KEY_SUBTITLE_SP = "subtitle_sp"
 private const val KEY_SUBTITLE_BACKGROUND = "subtitle_background"
+private const val KEY_TAP_SEEK_SECONDS = "tap_seek_seconds"
 internal const val TRACK_OFF = "off"
 private const val AUDIO_DELAY_STEP_MS = 50L
 private const val SUBTITLE_DELAY_STEP_MS = 100L
@@ -99,6 +109,15 @@ private val SUBTITLE_SIZES = listOf(14, 18, 22, 28)
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val BOOSTS_DB = listOf(0, 3, 6, 10)
 private val SLEEP_MINUTES = listOf(0, 15, 30, 60, 90)
+private const val DEFAULT_TAP_SEEK_SECONDS = 10
+private const val MAX_TAP_SEEK_SECONDS = 600
+private val TAP_SEEK_PRESETS = listOf(1, 2, 5, 10)
+/**
+ * How long a run of tap seeks lasts after its last seek, fade included. A single tap is only
+ * reported once the wait for a second one is over (300 ms), which leaves about 700 ms to tap on.
+ */
+private const val TAP_SEEK_RUN_MS = 1_000L
+private const val TAP_SEEK_FADE_MS = 150
 
 /** How the picture fills the screen; [aspect] overrides the video's own proportions. */
 enum class VideoFrameMode(val label: String, val aspect: Float? = null) {
@@ -173,6 +192,8 @@ abstract class VideoEngine(context: Context, private val videoId: Long) {
     var subtitleSp by mutableIntStateOf(prefs.getInt(KEY_SUBTITLE_SP, DEFAULT_SUBTITLE_SP))
         private set
     var subtitleBackground by mutableStateOf(prefs.getBoolean(KEY_SUBTITLE_BACKGROUND, false))
+        private set
+    var tapSeekSeconds by mutableIntStateOf(prefs.getInt(KEY_TAP_SEEK_SECONDS, DEFAULT_TAP_SEEK_SECONDS))
         private set
 
     /** False when the engine draws subtitles itself, so size and background aren't ours to set. */
@@ -271,6 +292,11 @@ abstract class VideoEngine(context: Context, private val videoId: Long) {
     fun changeSubtitleBackground(on: Boolean) {
         subtitleBackground = on
         prefs.edit().putBoolean(KEY_SUBTITLE_BACKGROUND, on).apply()
+    }
+
+    fun changeTapSeekSeconds(seconds: Int) {
+        tapSeekSeconds = seconds
+        prefs.edit().putInt(KEY_TAP_SEEK_SECONDS, seconds).apply()
     }
 
     fun addSubtitleFile(uri: Uri, mime: String) {
@@ -442,6 +468,84 @@ fun VideoAdvancedEffects(engine: VideoEngine) {
     }
 }
 
+/** What the badge shows: the seconds a run of tap seeks has covered that way. */
+class TapSeekRun(val forward: Boolean, val seconds: Int)
+
+/**
+ * Double tap with the controls hidden: the left half goes back, the right half ahead. As on YouTube
+ * every further tap during the run is one more step, so n quick taps make n - 1 steps.
+ */
+class TapSeek(private val engine: VideoEngine) {
+    var run by mutableStateOf<TapSeekRun?>(null)
+        private set
+    /** Not the engine's position: VLC only reports that a few times a second, which would lose quick taps. */
+    private var target = 0L
+
+    val running get() = run != null
+
+    fun onDoubleTap(rightSide: Boolean) = step(rightSide, if (running) 2 else 1)
+
+    fun onTap(rightSide: Boolean) = step(rightSide, 1)
+
+    fun endRun() {
+        run = null
+    }
+
+    private fun step(forward: Boolean, steps: Int) {
+        val seconds = engine.tapSeekSeconds * steps
+        val current = run
+        val from = if (current != null) target else engine.positionMs
+        val moved = from + (if (forward) seconds else -seconds) * 1000L
+        val end = engine.durationMs
+        target = (if (end > 0) moved.coerceAtMost(end) else moved).coerceAtLeast(0)
+        engine.seekTo(target)
+        run = TapSeekRun(forward, if (current?.forward == forward) current.seconds + seconds else seconds)
+    }
+}
+
+/** Over that half of the screen while a run lasts. Composed only then, and takes no touches. */
+@Composable
+fun BoxScope.TapSeekBadge(seek: TapSeek) {
+    val run = seek.run ?: return
+    val alpha = remember { Animatable(0f) }
+    LaunchedEffect(run) {
+        alpha.animateTo(1f, tween(TAP_SEEK_FADE_MS))
+        delay(TAP_SEEK_RUN_MS - 2 * TAP_SEEK_FADE_MS)
+        alpha.animateTo(0f, tween(TAP_SEEK_FADE_MS))
+        seek.endRun()
+    }
+    Column(
+        Modifier
+            .align(if (run.forward) Alignment.CenterEnd else Alignment.CenterStart)
+            .fillMaxHeight()
+            .fillMaxWidth(0.5f)
+            .graphicsLayer { this.alpha = alpha.value },
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Its own dark backing: white on a bright picture would be lost.
+        Column(
+            Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.Black.copy(alpha = 0.5f))
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                if (run.forward) Icons.Rounded.FastForward else Icons.Rounded.FastRewind,
+                null,
+                tint = Color.White,
+                modifier = Modifier.size(36.dp),
+            )
+            Text(
+                "${if (run.forward) "+" else "−"}${run.seconds} s",
+                color = Color.White,
+                fontSize = 15.sp,
+            )
+        }
+    }
+}
+
 /** The picture's box inside the zoomable area. */
 fun Modifier.videoFrame(mode: VideoFrameMode, videoAspect: Float): Modifier = when (mode) {
     VideoFrameMode.FIT -> aspectRatio(videoAspect)
@@ -584,6 +688,23 @@ private fun PlaybackTab(engine: VideoEngine) {
     val content = LocalGlassContent.current
     Section("SPEED")
     Pills(SPEEDS, { "${it}x" }, { it == engine.speed }, engine::changeSpeed)
+    Section("DOUBLE TAP TO SEEK")
+    var customSeek by remember { mutableStateOf(engine.tapSeekSeconds.takeIf { it !in TAP_SEEK_PRESETS }?.toString().orEmpty()) }
+    val parsedSeek = customSeek.toIntOrNull()?.takeIf { it in 1..MAX_TAP_SEEK_SECONDS }
+    Pills(TAP_SEEK_PRESETS, { "$it s" }, { it == engine.tapSeekSeconds }) {
+        customSeek = ""
+        engine.changeTapSeekSeconds(it)
+    }
+    Spacer(Modifier.height(6.dp))
+    GlassTextField(
+        customSeek,
+        {
+            customSeek = it
+            it.toIntOrNull()?.takeIf { s -> s in 1..MAX_TAP_SEEK_SECONDS }?.let(engine::changeTapSeekSeconds)
+        },
+        isError = customSeek.isNotEmpty() && parsedSeek == null,
+        suffix = "custom, s",
+    )
     Section("JUMP TO TIME")
     var jump by remember { mutableStateOf("") }
     val parsed = parseClock(jump)

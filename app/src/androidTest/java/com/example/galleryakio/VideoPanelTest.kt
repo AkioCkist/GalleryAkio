@@ -1,5 +1,6 @@
 package com.example.galleryakio
 
+import android.content.Context
 import android.content.ContextWrapper
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -16,11 +17,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.test.center
+import androidx.compose.ui.test.centerLeft
+import androidx.compose.ui.test.centerRight
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.galleryakio.data.MediaItem
@@ -30,6 +41,8 @@ import com.example.galleryakio.ui.components.GlassOverlayHost
 import com.example.galleryakio.ui.components.VideoControlsHost
 import com.example.galleryakio.ui.components.VideoPlayer
 import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +58,7 @@ class VideoPanelTest {
     val rule = createAndroidComposeRule<androidx.activity.ComponentActivity>()
 
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+    private var controlsVisible by mutableStateOf(false)
 
     private fun wait(millis: Int) = repeat(millis / 50) {
         rule.mainClock.advanceTimeBy(50)
@@ -95,8 +109,8 @@ class VideoPanelTest {
             loop = true,
             onLoopChange = {},
             leaveAction = VideoLeaveAction.entries.first(),
-            controlsVisible = false,
-            onControlsChange = {},
+            controlsVisible = controlsVisible,
+            onControlsChange = { controlsVisible = it },
             controlsHost = host,
         )
     }
@@ -190,6 +204,92 @@ class VideoPanelTest {
         wait(4_000)
         Log.i("VideoPanel", "clip playing: native code ${nativeCodeMb()} MB")
     }
+
+    private fun doubleTap(left: Boolean) = rule.onRoot().performTouchInput {
+        doubleClick(if (left) centerLeft + Offset(width / 8f, 0f) else centerRight - Offset(width / 8f, 0f))
+    }
+
+    /** The test file's picture shows its own second counter, so the shots tell where each seek landed. */
+    private fun tapSeeks(name: String, file: File, id: Long) {
+        assumeTrue(file.exists())
+        val prefs = instrumentation.targetContext.getSharedPreferences("video_advanced", Context.MODE_PRIVATE)
+        val before = prefs.getInt("tap_seek_seconds", -1)
+        try {
+            show(file, id, VideoControlsHost())
+            wait(3_000)
+            rule.onNodeWithText("PLAYBACK").performClick()
+            wait(400)
+            rule.onNodeWithText("5 s").performClick()
+            wait(300)
+            shot("seek_${name}_panel")
+            rule.onNodeWithText("CLOSE").performClick()
+            wait(1_500)
+            shot("seek_${name}_start")
+            doubleTap(left = false)
+            wait(200)
+            rule.onNodeWithText("+5 s").assertExists()
+            shot("seek_${name}_ahead")
+            wait(1_800)
+            doubleTap(left = false)
+            wait(150)
+            doubleTap(left = false)
+            wait(200)
+            // Four taps in one run: three steps.
+            rule.onNodeWithText("+15 s").assertExists()
+            wait(1_500)
+            shot("seek_${name}_ahead_run")
+            doubleTap(left = true)
+            wait(200)
+            rule.onNodeWithText("−5 s").assertExists()
+            wait(1_500)
+            shot("seek_${name}_back")
+        } finally {
+            prefs.edit().apply { if (before < 0) remove("tap_seek_seconds") else putInt("tap_seek_seconds", before) }.commit()
+        }
+    }
+
+    /** A typed amount, then what taps do once the run is over: bring the controls up, and pause with them up. */
+    @Test
+    fun tapSeekCustomAmountAndControls() {
+        val file = File(instrumentation.targetContext.getExternalFilesDir(null), "tapseek.mp4")
+        assumeTrue(file.exists())
+        val prefs = instrumentation.targetContext.getSharedPreferences("video_advanced", Context.MODE_PRIVATE)
+        val before = prefs.getInt("tap_seek_seconds", -1)
+        try {
+            show(file, -1007, VideoControlsHost())
+            wait(3_000)
+            rule.onNodeWithText("PLAYBACK").performClick()
+            wait(400)
+            rule.onAllNodes(hasSetTextAction())[0].performTextInput("7")
+            wait(300)
+            rule.onNodeWithText("CLOSE").performClick()
+            wait(1_000)
+            doubleTap(left = true)
+            wait(200)
+            rule.onNodeWithText("−7 s").assertExists()
+            wait(1_500)
+            rule.onNodeWithText("−7 s").assertDoesNotExist()
+            assertEquals(7, prefs.getInt("tap_seek_seconds", -1))
+
+            rule.onRoot().performTouchInput { click(center) }
+            wait(500)
+            assertTrue(controlsVisible)
+            doubleTap(left = false)
+            wait(200)
+            rule.onNodeWithText("+7 s").assertDoesNotExist()
+            // Paused, so the controls don't fade out.
+            wait(4_000)
+            assertTrue(controlsVisible)
+        } finally {
+            prefs.edit().apply { if (before < 0) remove("tap_seek_seconds") else putInt("tap_seek_seconds", before) }.commit()
+        }
+    }
+
+    @Test
+    fun tapSeeksOnExo() = tapSeeks("exo", File(instrumentation.targetContext.getExternalFilesDir(null), "tapseek.mp4"), -1005)
+
+    @Test
+    fun tapSeeksOnVlc() = tapSeeks("vlc", File(instrumentation.targetContext.getExternalFilesDir(null), "tapseek.wmv"), -1006)
 
     @Test
     fun exoPanelOverMultiTrackMovie() {

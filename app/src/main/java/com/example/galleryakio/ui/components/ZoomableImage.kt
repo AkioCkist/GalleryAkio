@@ -100,7 +100,7 @@ fun ZoomableImage(
     // Older cameras' previews are thumbnails, too small to show even before any zoom.
     var previewTooSmall by remember(item.id) { mutableStateOf(false) }
     val zoom = remember(item.id, tiled) { if (tiled) ZoomState(item.width, item.height) else ZoomState() }
-    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = onTap, modifier = modifier, zoom = zoom, onZoomGesture = onZoomGesture) {
+    ZoomBox(resetKey = item.id, isCurrentPage = isCurrentPage, onTap = { onTap() }, modifier = modifier, zoom = zoom, onZoomGesture = onZoomGesture) {
         AsyncImage(
             model = request,
             contentDescription = item.displayName,
@@ -128,15 +128,16 @@ val LocalViewerZoom = staticCompositionLocalOf { ViewerZoom() }
  * Pinch / double-tap zoom for any content (photos and videos). Single-finger drags pass
  * through to the parent pager while not zoomed, so swiping between items keeps working.
  * With [onDoubleTap] (videos) a double tap does that instead and only pinch zooms.
+ * Both tap callbacks say whether the tap was on the right half of the box.
  * [onZoomGesture] runs once per pinch or drag, as soon as it moves the content.
  */
 @Composable
 fun ZoomBox(
     resetKey: Any,
     isCurrentPage: Boolean,
-    onTap: () -> Unit,
+    onTap: (rightSide: Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    onDoubleTap: (() -> Unit)? = null,
+    onDoubleTap: ((rightSide: Boolean) -> Unit)? = null,
     zoom: ZoomState = remember { ZoomState() },
     onZoomGesture: () -> Unit = {},
     content: @Composable BoxScope.() -> Unit,
@@ -177,11 +178,14 @@ fun ZoomBox(
             .onSizeChanged { size = it }
             .pointerInput(resetKey, doubleTapZooms) {
                 if (!doubleTapZooms) {
-                    detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap?.invoke() })
+                    detectTapGestures(
+                        onTap = { tap(it.x > size.width / 2f) },
+                        onDoubleTap = { doubleTap?.invoke(it.x > size.width / 2f) },
+                    )
                     return@pointerInput
                 }
                 detectTapGestures(
-                    onTap = { tap() },
+                    onTap = { tap(it.x > size.width / 2f) },
                     onDoubleTap = { tap ->
                         val zoomIn = scale.value <= 1.05f
                         val target = if (zoomIn) DOUBLE_TAP_SCALE else 1f
